@@ -1,9 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { AppHeader } from "@/components/app-header";
+import {
+  EMPTY_APPLICATIONS_SNAPSHOT,
+  getApplicationsSnapshot,
+  parseApplicationsSnapshot,
+  subscribeToApplications,
+} from "@/components/founder-application-storage";
 import type {
   Assessment,
   Axis,
@@ -111,7 +123,34 @@ const MAYA_FALLBACK: Assessment = {
 };
 
 function fallbackFor(founderId: string): Assessment {
-  return { ...MAYA_FALLBACK, founderId };
+  if (founderId === "maya-chen") return MAYA_FALLBACK;
+
+  return {
+    founderId,
+    axes: {
+      founder: {
+        verdict: "neutral",
+        trend: "flat",
+        rationale: "The founder screen is queued and awaiting backend intake.",
+      },
+      market: {
+        verdict: "neutral",
+        trend: "flat",
+        rationale: "Market evidence will appear when the merit screen completes.",
+      },
+      ideaVsMarket: {
+        verdict: "neutral",
+        trend: "flat",
+        rationale: "Idea-to-market fit remains unscored until intake is available.",
+      },
+    },
+    claims: [],
+    recommendation: "conditional",
+    conviction: "low",
+    checkSize: "$0, pending screen",
+    speedSeconds: 0,
+    flags: 0,
+  };
 }
 
 async function requestAssessment(founderId: string): Promise<Assessment> {
@@ -128,6 +167,18 @@ async function requestAssessment(founderId: string): Promise<Assessment> {
 }
 
 export function FounderMemo({ founderId }: { founderId: string }) {
+  const applicationsSnapshot = useSyncExternalStore(
+    subscribeToApplications,
+    getApplicationsSnapshot,
+    () => EMPTY_APPLICATIONS_SNAPSHOT,
+  );
+  const storedApplication = useMemo(
+    () =>
+      parseApplicationsSnapshot(applicationsSnapshot).find(
+        (application) => application.founder.id === founderId,
+      ),
+    [applicationsSnapshot, founderId],
+  );
   const [assessment, setAssessment] = useState<Assessment>(() =>
     fallbackFor(founderId),
   );
@@ -139,19 +190,21 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     setUsingFallback(false);
 
     try {
-      setAssessment(await requestAssessment(founderId));
+      setAssessment(
+        storedApplication?.assessment ?? (await requestAssessment(founderId)),
+      );
     } catch {
       setAssessment(fallbackFor(founderId));
       setUsingFallback(true);
     } finally {
       setIsLoading(false);
     }
-  }, [founderId]);
+  }, [founderId, storedApplication]);
 
   useEffect(() => {
     let active = true;
 
-    requestAssessment(founderId)
+    Promise.resolve(storedApplication?.assessment ?? requestAssessment(founderId))
       .then((result) => {
         if (active) setAssessment(result);
       })
@@ -167,10 +220,20 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     return () => {
       active = false;
     };
-  }, [founderId]);
+  }, [founderId, storedApplication]);
 
   const profile =
-    FOUNDER_PROFILES[founderId] ?? FOUNDER_PROFILES["maya-chen"];
+    FOUNDER_PROFILES[founderId] ??
+    (storedApplication
+      ? profileFromFounder(storedApplication.founder)
+      : {
+          name: "Pending founder",
+          company: "New application",
+          initials: "PF",
+          sector: "Unclassified",
+          geo: "Undisclosed",
+          entry: "Inbound",
+        });
   const contradictionCount = assessment.claims.filter(
     (claim) => claim.status === "contradicted",
   ).length;
@@ -339,6 +402,26 @@ export function FounderMemo({ founderId }: { founderId: string }) {
       </main>
     </div>
   );
+}
+
+function profileFromFounder(
+  founder: ReturnType<typeof parseApplicationsSnapshot>[number]["founder"],
+): FounderProfile {
+  const initials = founder.name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  return {
+    name: founder.name,
+    company: founder.company,
+    initials: initials || "NF",
+    sector: founder.sector,
+    geo: founder.geo,
+    entry: "Inbound",
+  };
 }
 
 function AxisCard({ axis, label }: { axis: Axis; label: string }) {

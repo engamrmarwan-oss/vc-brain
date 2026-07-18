@@ -1,10 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 import { AppHeader } from "@/components/app-header";
+import {
+  EMPTY_APPLICATIONS_SNAPSHOT,
+  getApplicationsSnapshot,
+  parseApplicationsSnapshot,
+  subscribeToApplications,
+} from "@/components/founder-application-storage";
 import type {
+  Assessment,
   AxisVerdict,
   Entry,
   Founder,
@@ -70,11 +77,43 @@ const FILTERS: Array<{ label: string; value: EntryFilter }> = [
 export function FounderPipeline({ founders }: { founders: Founder[] }) {
   const [query, setQuery] = useState("");
   const [entryFilter, setEntryFilter] = useState<EntryFilter>("all");
+  const applicationsSnapshot = useSyncExternalStore(
+    subscribeToApplications,
+    getApplicationsSnapshot,
+    () => EMPTY_APPLICATIONS_SNAPSHOT,
+  );
+  const storedApplications = useMemo(
+    () => parseApplicationsSnapshot(applicationsSnapshot),
+    [applicationsSnapshot],
+  );
+  const allFounders = useMemo(() => {
+    const byId = new Map(founders.map((founder) => [founder.id, founder]));
+
+    for (const application of storedApplications) {
+      if (!byId.has(application.founder.id)) {
+        byId.set(application.founder.id, application.founder);
+      }
+    }
+
+    return [...byId.values()].sort(
+      (a, b) => b.founderScore - a.founderScore,
+    );
+  }, [founders, storedApplications]);
+  const storedApplicationsById = useMemo(
+    () =>
+      new Map(
+        storedApplications.map((application) => [
+          application.founder.id,
+          application,
+        ]),
+      ),
+    [storedApplications],
+  );
 
   const filteredFounders = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return founders.filter((founder) => {
+    return allFounders.filter((founder) => {
       const matchesEntry =
         entryFilter === "all" || founder.entry === entryFilter;
       const matchesQuery =
@@ -85,15 +124,15 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
 
       return matchesEntry && matchesQuery;
     });
-  }, [entryFilter, founders, query]);
+  }, [allFounders, entryFilter, query]);
 
-  const outboundCount = founders.filter(
+  const outboundCount = allFounders.filter(
     (founder) => founder.entry === "outbound",
   ).length;
-  const inboundCount = founders.filter(
+  const inboundCount = allFounders.filter(
     (founder) => founder.entry === "inbound",
   ).length;
-  const coldStartCount = founders.filter(
+  const coldStartCount = allFounders.filter(
     (founder) => founder.entry === "cold-start",
   ).length;
 
@@ -147,7 +186,7 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
             detail="currently screening"
             icon={<LayersIcon />}
             label="Active pipeline"
-            value={String(founders.length).padStart(2, "0")}
+            value={String(allFounders.length).padStart(2, "0")}
           />
           <SummaryMetric
             detail="never applied"
@@ -245,13 +284,21 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
 
           <ol className="divide-y divide-[#e2e0d9]">
             {filteredFounders.map((founder) => {
-              const rank = founders.findIndex((item) => item.id === founder.id) + 1;
+              const rank =
+                allFounders.findIndex((item) => item.id === founder.id) + 1;
+              const storedAssessment =
+                storedApplicationsById.get(founder.id)?.assessment;
               return (
                 <FounderRow
                   founder={founder}
                   key={founder.id}
                   rank={rank}
-                  signals={FOUNDER_SIGNALS[founder.id] ?? DEFAULT_SIGNALS}
+                  signals={
+                    FOUNDER_SIGNALS[founder.id] ??
+                    (storedAssessment
+                      ? signalsFromAssessment(storedAssessment)
+                      : DEFAULT_SIGNALS)
+                  }
                 />
               );
             })}
@@ -284,6 +331,33 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
       </main>
     </div>
   );
+}
+
+function signalsFromAssessment(assessment: Assessment): FounderSignals {
+  const contradictions = assessment.claims.filter(
+    (claim) => claim.status === "contradicted",
+  ).length;
+  const unverifiable = assessment.claims.filter(
+    (claim) => claim.status === "unverifiable",
+  ).length;
+  const trust: FounderSignals["trust"] = contradictions
+    ? "contradicted"
+    : unverifiable || assessment.claims.length === 0
+      ? "thin"
+      : "verified";
+  const trustLabel = contradictions
+    ? `${contradictions} ${contradictions === 1 ? "contradiction" : "contradictions"}`
+    : trust === "thin"
+      ? "Thin evidence"
+      : "Trust verified";
+
+  return {
+    founder: assessment.axes.founder,
+    market: assessment.axes.market,
+    ideaVsMarket: assessment.axes.ideaVsMarket,
+    trust,
+    trustLabel,
+  };
 }
 
 function SummaryMetric({

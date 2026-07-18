@@ -3,6 +3,7 @@
 // Trust Score is per claim: every claim gets status + confidence + evidence
 // (brief rule 5). All model traffic goes through callLLM (brief rule 3).
 
+import { fetchFootprint } from "@/agents/coldstart";
 import { fetchGitHubSignals } from "@/agents/github";
 import { callLLM } from "@/lib/llm";
 import type { Assessment, Axis, AxisVerdict, Claim, Founder, Trend } from "@/lib/types";
@@ -70,6 +71,29 @@ async function gatherSignals(
   f: Founder
 ): Promise<{ lines: string[]; liveGitHub: boolean }> {
   const cached = SIGNALS[f.id] ?? f.publicFootprint ?? [];
+
+  // Cold-start founders: no repo to inspect — search the public footprint
+  // instead. Live snippets are added alongside the cached/seeded signals;
+  // on any failure the seeded footprint alone carries the score.
+  if (f.entry === "cold-start" && !f.githubUrl) {
+    const context = `${f.sector} founder ${f.geo}`;
+    const live = await fetchFootprint(f.name, context);
+    if (!live || live.length === 0) {
+      console.warn(`gatherSignals(${f.id}): live footprint search failed or empty, using seeded footprint`);
+      return {
+        lines: [
+          ...cached,
+          "(NOTE: live web footprint search unavailable — signals above are cached snapshots; weight them with lower confidence)",
+        ],
+        liveGitHub: false,
+      };
+    }
+    const liveLines = live.map(
+      (s) => `Web ${s.source} (live Tavily): "${s.snippet}" [${s.url}]`
+    );
+    return { lines: [...liveLines, ...cached], liveGitHub: false };
+  }
+
   if (!f.githubUrl) return { lines: cached, liveGitHub: false };
 
   const live = await fetchGitHubSignals(f.githubUrl);
@@ -110,6 +134,23 @@ function buildUserPrompt(f: Founder, signals: string[]): string {
     ``,
     `Gathered signals:`,
     ...(signals.length ? signals.map((s) => `- ${s}`) : ["(none found)"]),
+    ...(f.entry === "cold-start"
+      ? [
+          ``,
+          `COLD-START FOUNDER: no repo, no funding history, no deck. Evidence is`,
+          `thin by nature — say so honestly in every rationale. Score the founder`,
+          `axis from public-footprint signals: technical depth, communication`,
+          `quality, domain knowledge. Emit each meaningful footprint signal as a`,
+          `claim: status "verified" if directly observed in a snippet or signal,`,
+          `otherwise "unverifiable" — NEVER "contradicted": this founder claimed`,
+          `nothing, and missing evidence (no repo, no funding) is thinness, not a`,
+          `refuted lie. Source "web:tavily" for live snippets. Cap`,
+          `every confidence at 0.6 — the score rests on limited signals and the`,
+          `memo must reflect that. Live web snippets may describe a different`,
+          `person with the same name; discount any snippet that does not clearly`,
+          `match this founder's domain and geography.`,
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -180,6 +221,26 @@ function applyStaleGitHubPenalty(claims: Claim[], liveGitHub: boolean): Claim[] 
   return claims.map((c) =>
     c.source === "GitHub" ? { ...c, confidence: Math.min(c.confidence, 0.7) } : c
   );
+}
+
+// Cold-start honesty: thin evidence means no claim gets to look certain,
+// no matter what the model returned. The 0.6 cap also makes "high"
+// conviction unreachable in deriveDecision (needs mean confidence >= 0.75)
+// — the wide band is enforced in code, not just requested in the prompt.
+// And with zero deck claims there is nothing to contradict: a footprint
+// observation the model marks "contradicted" (no repo, no funding) is
+// thinness, not a caught lie — downgrade it so phantom contradictions
+// can't trigger the pass rule or inflate flags.
+function applyColdStartHonesty(founder: Founder, claims: Claim[]): Claim[] {
+  if (founder.entry !== "cold-start") return claims;
+  return claims.map((c) => ({
+    ...c,
+    status:
+      c.status === "contradicted" && founder.deckClaims.length === 0
+        ? "unverifiable"
+        : c.status,
+    confidence: Math.min(c.confidence, 0.6),
+  }));
 }
 
 // recommendation / conviction / checkSize / flags derive deterministically
@@ -273,15 +334,17 @@ function stubAssessment(founder: Founder): Omit<Assessment, "speedSeconds"> {
       market: { verdict: "neutral", trend: "flat", rationale: "No signals gathered yet." },
       ideaVsMarket: { verdict: "neutral", trend: "flat", rationale: "No signals gathered yet." },
     } satisfies Assessment["axes"]);
-  const claims =
+  const claims = applyColdStartHonesty(
+    founder,
     STUB_CLAIMS[founder.id] ??
-    founder.deckClaims.map((text) => ({
-      text,
-      status: "unverifiable" as const,
-      confidence: 0.5,
-      evidence: "no evidence surfaced",
-      source: "deck",
-    }));
+      founder.deckClaims.map((text) => ({
+        text,
+        status: "unverifiable" as const,
+        confidence: 0.5,
+        evidence: "no evidence surfaced",
+        source: "deck",
+      }))
+  );
   return { founderId: founder.id, axes, claims, ...deriveDecision(axes, claims) };
 }
 
@@ -323,9 +386,12 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
     // A model that returns axes but drops the claims array still owes a
     // Trust Score — fall back to stub claims rather than an empty list.
     const rawFinalClaims = claims.length || !founder.deckClaims.length ? claims : fallback.claims;
-    const finalClaims = founder.githubUrl
-      ? applyStaleGitHubPenalty(rawFinalClaims, gathered.liveGitHub)
-      : rawFinalClaims;
+    const finalClaims = applyColdStartHonesty(
+      founder,
+      founder.githubUrl
+        ? applyStaleGitHubPenalty(rawFinalClaims, gathered.liveGitHub)
+        : rawFinalClaims
+    );
 
     return {
       founderId: founder.id,
