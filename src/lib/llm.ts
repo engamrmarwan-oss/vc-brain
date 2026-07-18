@@ -14,6 +14,8 @@ export async function callLLM(opts: CallOpts): Promise<string> {
   const model = pickModel(opts.tier ?? "reasoning");
 
   if (MODEL_CONFIG.backend === "openai") {
+    // gpt-5.x / o-series reasoning models only accept the default temperature.
+    const fixedTemperature = /^(gpt-5|o\d)/.test(model);
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -27,10 +29,11 @@ export async function callLLM(opts: CallOpts): Promise<string> {
           { role: "user", content: opts.user },
         ],
         ...(opts.json ? { response_format: { type: "json_object" } } : {}),
-        temperature: 0.2,
+        ...(fixedTemperature ? {} : { temperature: 0.2 }),
       }),
     });
     const data = await res.json();
+    if (data.error) throw new Error(`openai: ${data.error.message}`);
     return data.choices?.[0]?.message?.content ?? "";
   }
 
@@ -50,5 +53,6 @@ export async function callLLM(opts: CallOpts): Promise<string> {
     }),
   });
   const data = await res.json();
+  if (data.error) throw new Error(`anthropic: ${data.error.message}`);
   return data.content?.[0]?.text ?? "";
 }
