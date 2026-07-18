@@ -72,7 +72,7 @@ export function FounderApplyForm() {
               </span>
             </div>
 
-            <h1 className="max-w-md text-[36px] font-semibold leading-[1.03] tracking-[-0.05em] sm:text-[45px]">
+            <h1 className="max-w-md text-[32px] font-semibold leading-[1.03] tracking-[-0.05em] sm:text-[45px]">
               A focused application. Nothing more.
             </h1>
             <p className="mt-5 max-w-md text-[12px] leading-[1.75] text-[#aeb2aa]">
@@ -80,7 +80,7 @@ export function FounderApplyForm() {
               fundraising history, or ten-page form required.
             </p>
 
-            <div className="mt-10 space-y-1">
+            <div className="mt-10 hidden space-y-1 sm:block">
               <MinimalStep
                 detail="The company you are building"
                 label="Company"
@@ -100,7 +100,7 @@ export function FounderApplyForm() {
             </div>
           </div>
 
-          <div className="mt-10 border-t border-white/10 pt-6">
+          <div className="mt-10 hidden border-t border-white/10 pt-6 sm:block">
             <div className="flex items-start gap-3">
               <span className="grid size-8 shrink-0 place-items-center rounded-full bg-white/[0.07] text-[#78bd96]">
                 <ShieldIcon />
