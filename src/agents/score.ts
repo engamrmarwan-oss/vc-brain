@@ -3,6 +3,7 @@
 // Trust Score is per claim: every claim gets status + confidence + evidence
 // (brief rule 5). All model traffic goes through callLLM (brief rule 3).
 
+import { fetchGitHubSignals } from "@/agents/github";
 import { callLLM } from "@/lib/llm";
 import type { Assessment, Axis, AxisVerdict, Claim, Founder, Trend } from "@/lib/types";
 
@@ -58,8 +59,48 @@ Respond with ONLY this JSON shape:
 }
 "confidence" is how confident YOU are in the status you assigned, 0..1.`;
 
-function buildUserPrompt(f: Founder): string {
-  const signals = SIGNALS[f.id] ?? f.publicFootprint ?? [];
+const isGitHubLine = (s: string) => /^github\b/i.test(s.trim());
+
+// Signal gathering: live GitHub first, cached SIGNALS as the safety net.
+// If the live fetch succeeds, the fresh line REPLACES the cached GitHub line
+// so the model reasons from real repo data. If it fails (404, rate-limit,
+// timeout, GitHub down), the cached line stays, explicitly marked stale so
+// both the model and the deterministic layer weight it lower. Never throws.
+async function gatherSignals(
+  f: Founder
+): Promise<{ lines: string[]; liveGitHub: boolean }> {
+  const cached = SIGNALS[f.id] ?? f.publicFootprint ?? [];
+  if (!f.githubUrl) return { lines: cached, liveGitHub: false };
+
+  const live = await fetchGitHubSignals(f.githubUrl);
+  if (!live) {
+    console.warn(`gatherSignals(${f.id}): live GitHub fetch failed for ${f.githubUrl}, using cached signals`);
+    return {
+      lines: [
+        ...cached,
+        "(NOTE: live GitHub fetch failed — GitHub lines above are cached snapshots; weight them with lower confidence)",
+      ],
+      liveGitHub: false,
+    };
+  }
+
+  const repoPath = f.githubUrl
+    .replace(/^https?:\/\/(www\.)?github\.com\//i, "")
+    .replace(/\/+$/, "");
+  const liveLine =
+    `GitHub ${repoPath} (live API): ${live.stars} stars, ${live.forks} forks, ` +
+    (live.lastCommitDaysAgo === null
+      ? "no commits found"
+      : `last commit ${live.lastCommitDaysAgo} days ago`) +
+    `, ${live.openIssues} open issues` +
+    (live.primaryLanguage ? `, primary language ${live.primaryLanguage}` : "");
+  const lines = cached.some(isGitHubLine)
+    ? cached.map((s) => (isGitHubLine(s) ? liveLine : s))
+    : [liveLine, ...cached];
+  return { lines, liveGitHub: true };
+}
+
+function buildUserPrompt(f: Founder, signals: string[]): string {
   return [
     `Founder: ${f.name} — ${f.company} (${f.sector}, ${f.geo}, entry: ${f.entry})`,
     `Founder Score from memory: ${f.founderScore} (confidence ${f.founderScoreConfidence})`,
@@ -106,21 +147,39 @@ function parseModelJson(raw: string): { axes?: Record<string, unknown>; claims?:
 
 // Demo insurance: Maya's "10,000 active users" must be contradicted. The
 // prompt carries the GitHub signal so the model reasons there itself; this
-// guard only corrects the record if it doesn't.
-function enforceKnownContradictions(founder: Founder, claims: Claim[]): Claim[] {
+// guard only corrects the record if it doesn't — citing the same GitHub line
+// (live or cached) that was actually in the prompt.
+function enforceKnownContradictions(
+  founder: Founder,
+  claims: Claim[],
+  signalLines: string[]
+): Claim[] {
   if (founder.id !== "maya-chen") return claims;
+  const ghLine =
+    signalLines.find(isGitHubLine) ??
+    "GitHub github.com/mayachen/reflex: 14 stars, last commit 7 months ago";
   return claims.map((c) => {
     if (/10[,.]?000|10k/i.test(c.text) && /user/i.test(c.text) && c.status !== "contradicted") {
       return {
         ...c,
         status: "contradicted",
         confidence: 0.9,
-        evidence: "GitHub github.com/mayachen/reflex: 14 stars, last commit 7 months ago — inconsistent with 10,000 active users",
+        evidence: `${ghLine} — inconsistent with 10,000 active users`,
         source: "GitHub",
       };
     }
     return c;
   });
+}
+
+// The "lower confidence flag" for stale evidence: if this founder has a repo
+// but the live fetch failed, GitHub-sourced verdicts rest on cached snapshots
+// — cap their confidence so the Trust Score stays honest.
+function applyStaleGitHubPenalty(claims: Claim[], liveGitHub: boolean): Claim[] {
+  if (liveGitHub) return claims;
+  return claims.map((c) =>
+    c.source === "GitHub" ? { ...c, confidence: Math.min(c.confidence, 0.7) } : c
+  );
 }
 
 // recommendation / conviction / checkSize / flags derive deterministically
@@ -231,11 +290,20 @@ function stubAssessment(founder: Founder): Omit<Assessment, "speedSeconds"> {
 export async function scoreFounder(founder: Founder): Promise<Assessment> {
   const t0 = Date.now();
   try {
-    const raw = await callLLM({
+    // Live signal gathering happens inside the timing window — speedSeconds
+    // measures signal -> decision, not just the LLM call.
+    const gathered = await gatherSignals(founder);
+    const llmOpts = {
       system: SYSTEM,
-      user: buildUserPrompt(founder),
-      tier: "reasoning",
+      user: buildUserPrompt(founder, gathered.lines),
+      tier: "reasoning" as const,
       json: true,
+    };
+    // OpenAI occasionally throws transient errors; one retry before the
+    // stub fallback keeps real reasoning on screen during the demo.
+    const raw = await callLLM(llmOpts).catch(async () => {
+      await new Promise((r) => setTimeout(r, 500));
+      return callLLM(llmOpts);
     });
     const parsed = parseModelJson(raw);
     const fallback = stubAssessment(founder);
@@ -249,11 +317,15 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
       founder,
       (Array.isArray(parsed.claims) ? parsed.claims : [])
         .map(sanitizeClaim)
-        .filter((c): c is Claim => c !== null)
+        .filter((c): c is Claim => c !== null),
+      gathered.lines
     );
     // A model that returns axes but drops the claims array still owes a
     // Trust Score — fall back to stub claims rather than an empty list.
-    const finalClaims = claims.length || !founder.deckClaims.length ? claims : fallback.claims;
+    const rawFinalClaims = claims.length || !founder.deckClaims.length ? claims : fallback.claims;
+    const finalClaims = founder.githubUrl
+      ? applyStaleGitHubPenalty(rawFinalClaims, gathered.liveGitHub)
+      : rawFinalClaims;
 
     return {
       founderId: founder.id,
