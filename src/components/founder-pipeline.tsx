@@ -108,7 +108,7 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
   const [query, setQuery] = useState("");
   const [entryFilter, setEntryFilter] = useState<EntryFilter>("all");
   const [thesis, setThesis] = useState<ThesisState>(DEFAULT_THESIS);
-  const [isThesisOpen, setIsThesisOpen] = useState(true);
+  const [isThesisOpen, setIsThesisOpen] = useState(false);
   const [isRefreshing, startRefresh] = useTransition();
   const [rankedEntries, setRankedEntries] = useState<RankedApiEntry[] | null>(
     null,
