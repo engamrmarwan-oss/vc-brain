@@ -6,6 +6,7 @@
 import type { DeckSummary, ResumeSummary } from "@/agents/deck";
 import { FOUNDERS } from "@/data/seed";
 import { DEFAULT_THESIS, type ThesisConfig } from "@/lib/thesis";
+import type { TraceReport } from "@/lib/trace";
 import type { Assessment, Founder } from "@/lib/types";
 
 export type DocumentType = "deck" | "resume";
@@ -24,6 +25,7 @@ type Store = {
   deckSummaries: Map<string, DeckSummary>; // per-founder extracted exec summary
   resumeSummaries: Map<string, ResumeSummary>; // per-founder career signal
   documents: Map<string, Partial<Record<DocumentType, StoredDocument>>>;
+  traces: Map<string, TraceReport>; // audit trail of the latest scoring run
   thesis: ThesisConfig;
   seeded: boolean;
 };
@@ -39,6 +41,7 @@ function getStore(): Store {
       deckSummaries: new Map(),
       resumeSummaries: new Map(),
       documents: new Map(),
+      traces: new Map(),
       thesis: DEFAULT_THESIS,
       seeded: false,
     };
@@ -52,6 +55,7 @@ function getStore(): Store {
   s.deckSummaries ??= new Map();
   s.resumeSummaries ??= new Map();
   s.documents ??= new Map();
+  s.traces ??= new Map();
   s.thesis ??= DEFAULT_THESIS;
   if (!s.seeded) {
     for (const f of FOUNDERS) s.founders.set(f.id, f);
@@ -115,6 +119,14 @@ export function saveDocument(
   const existing = s.documents.get(founderId) ?? {};
   existing[type] = doc;
   s.documents.set(founderId, existing);
+}
+
+export function getTrace(founderId: string): TraceReport | undefined {
+  return getStore().traces.get(founderId);
+}
+
+export function saveTrace(t: TraceReport): void {
+  getStore().traces.set(t.founderId, t);
 }
 
 export function getThesis(): ThesisConfig {

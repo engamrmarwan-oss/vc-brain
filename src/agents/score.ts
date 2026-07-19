@@ -6,7 +6,9 @@
 import { fetchFootprint } from "@/agents/coldstart";
 import { fetchGitHubSignals } from "@/agents/github";
 import { callLLM } from "@/lib/llm";
-import { getDeckSummary, getResumeSummary } from "@/lib/store";
+import { getDeckSummary, getResumeSummary, saveTrace } from "@/lib/store";
+import { matchEvidence, TraceCollector, type ClaimCitation } from "@/lib/trace";
+import { buildTrustReport } from "@/lib/trust";
 import type { Assessment, Axis, AxisVerdict, Claim, Founder, Trend } from "@/lib/types";
 
 // Signals a scout would gather before scoring — fed into the prompt so claim
@@ -408,13 +410,83 @@ export function wasStubFallback(a: Assessment): boolean {
   return STUB_RESULTS.has(a);
 }
 
+// Post-hoc citation matching: claims cite evidence by text overlap, so the
+// scoring prompt and frozen types stay untouched. Conservative matcher — a
+// missing citation is flagged `uncited`, never invented.
+function buildCitations(
+  claims: Claim[],
+  trace: TraceCollector
+): ClaimCitation[] {
+  const refs = trace.refs();
+  return claims.map((c) => {
+    const evidenceIds = matchEvidence(`${c.text} ${c.evidence}`, refs);
+    return { claimText: c.text, evidenceIds, uncited: evidenceIds.length === 0 };
+  });
+}
+
 export async function scoreFounder(founder: Founder): Promise<Assessment> {
   const t0 = Date.now();
+  const trace = new TraceCollector(founder.id);
   try {
     // Live signal gathering happens inside the timing window — speedSeconds
     // measures signal -> decision, not just the LLM call.
     const gathered = await gatherSignals(founder);
+    const signalRefs = trace.addSignalLines(gathered.lines);
+    trace.step(
+      "extractor",
+      "Gather live and cached signals",
+      `${signalRefs.length} evidence signal(s); GitHub ${
+        founder.githubUrl ? (gathered.liveGitHub ? "live API" : "cached/unavailable") : "not provided"
+      }`,
+      {
+        evidenceIds: signalRefs.map((r) => r.id),
+        status: signalRefs.length ? "supported" : "insufficient",
+        startedAt: t0,
+      }
+    );
+
+    const deckSum = getDeckSummary(founder.id);
+    if (deckSum) {
+      const deckRefs = [
+        trace.addEvidence("deck", deckSum.snapshot, {
+          title: "Deck: company snapshot",
+          locator: { section: "executive-summary" },
+        }),
+        ...deckSum.claims.map((c) =>
+          trace.addEvidence("deck", c, { title: "Deck claim", locator: { section: "claims" } })
+        ),
+      ];
+      trace.step(
+        "extractor",
+        "Load deck executive summary",
+        `snapshot + ${deckSum.claims.length} extracted claim(s) fed to axis scoring`,
+        { evidenceIds: deckRefs.map((r) => r.id), status: "supported" }
+      );
+    }
+    const resumeSum = getResumeSummary(founder.id);
+    if (resumeSum) {
+      const resumeRefs = [
+        trace.addEvidence("resume", resumeSum.headline, {
+          title: "Resume: career headline",
+          locator: { section: "headline" },
+        }),
+        ...resumeSum.backgroundClaims.map((c) =>
+          trace.addEvidence("resume", c, {
+            title: "Resume background claim",
+            locator: { section: "background" },
+          })
+        ),
+      ];
+      trace.step(
+        "extractor",
+        "Load resume career signal",
+        `${resumeSum.roles.length} role(s), ${resumeSum.backgroundClaims.length} background claim(s) fed to founder axis`,
+        { evidenceIds: resumeRefs.map((r) => r.id), status: "supported" }
+      );
+    }
+
     // Retry/backoff and cross-backend fallback live inside callLLM.
+    const tLLM = Date.now();
     const raw = await callLLM({
       system: SYSTEM,
       user: buildUserPrompt(founder, gathered.lines),
@@ -429,13 +501,27 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
       market: sanitizeAxis(parsed.axes?.market, fallback.axes.market),
       ideaVsMarket: sanitizeAxis(parsed.axes?.ideaVsMarket, fallback.axes.ideaVsMarket),
     };
-    const claims = enforceKnownContradictions(
-      founder,
-      (Array.isArray(parsed.claims) ? parsed.claims : [])
-        .map(sanitizeClaim)
-        .filter((c): c is Claim => c !== null),
-      gathered.lines
+    const sanitized = (Array.isArray(parsed.claims) ? parsed.claims : [])
+      .map(sanitizeClaim)
+      .filter((c): c is Claim => c !== null);
+    trace.step(
+      "scorer",
+      "Score three independent axes + verify claims (reasoning model)",
+      `founder=${axes.founder.verdict} market=${axes.market.verdict} ideaVsMarket=${axes.ideaVsMarket.verdict}; ${sanitized.length} claim verdict(s) returned`,
+      { status: "supported", startedAt: tLLM }
     );
+
+    const claims = enforceKnownContradictions(founder, sanitized, gathered.lines);
+    const guardCorrected = claims.filter((c, i) => c.status !== sanitized[i]?.status).length;
+    if (guardCorrected > 0) {
+      trace.step(
+        "guard",
+        "Deterministic contradiction guard",
+        `corrected ${guardCorrected} claim verdict(s) the model missed, citing gathered GitHub evidence`,
+        { status: "corrected" }
+      );
+    }
+
     // A model that returns axes but drops the claims array still owes a
     // Trust Score — fall back to stub claims rather than an empty list.
     const rawFinalClaims = claims.length || !founder.deckClaims.length ? claims : fallback.claims;
@@ -445,12 +531,56 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
         ? applyStaleGitHubPenalty(rawFinalClaims, gathered.liveGitHub)
         : rawFinalClaims
     );
+    const capped = finalClaims.filter(
+      (c, i) =>
+        rawFinalClaims[i] &&
+        (c.confidence !== rawFinalClaims[i].confidence || c.status !== rawFinalClaims[i].status)
+    ).length;
+    if (capped > 0) {
+      trace.step(
+        "guard",
+        "Evidence-honesty caps",
+        `${capped} claim(s) capped: stale-evidence / thin-evidence confidence limits applied in code`,
+        { status: "corrected" }
+      );
+    }
+
+    const decision = deriveDecision(axes, finalClaims);
+    trace.step(
+      "scorer",
+      "Derive recommendation deterministically",
+      `${decision.recommendation} / ${decision.conviction} conviction, ${decision.flags} flag(s) — from axes + contradiction count, not the model`,
+      { status: "info" }
+    );
+
+    const trust = buildTrustReport(founder, finalClaims);
+    trace.step(
+      "trust-engine",
+      "Aggregate founder-level Trust Score",
+      `Trust ${trust.score ?? "n/a"} ±${trust.band} (${trust.label}); coverage ${trust.coverage.present}/${trust.coverage.required} channels`,
+      {
+        status:
+          trust.label === "contradicted"
+            ? "challenged"
+            : trust.label === "insufficient-evidence"
+              ? "insufficient"
+              : "supported",
+      }
+    );
+
+    saveTrace(
+      trace.finish(buildCitations(finalClaims, trace), {
+        founder: matchEvidence(axes.founder.rationale, trace.refs()),
+        market: matchEvidence(axes.market.rationale, trace.refs()),
+        ideaVsMarket: matchEvidence(axes.ideaVsMarket.rationale, trace.refs()),
+      })
+    );
 
     return {
       founderId: founder.id,
       axes,
       claims: finalClaims,
-      ...deriveDecision(axes, finalClaims),
+      ...decision,
       speedSeconds: (Date.now() - t0) / 1000,
     };
   } catch (err) {
@@ -458,6 +588,19 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
     console.warn(`scoreFounder(${founder.id}) fell back to stub:`, err);
     const stub = { ...stubAssessment(founder), speedSeconds: (Date.now() - t0) / 1000 };
     STUB_RESULTS.add(stub);
+    trace.step(
+      "scorer",
+      "Primary scoring unavailable",
+      "LLM call failed after retries — deterministic stub served (not cached, not validated)",
+      { status: "insufficient" }
+    );
+    saveTrace(
+      trace.finish(buildCitations(stub.claims, trace), {
+        founder: [],
+        market: [],
+        ideaVsMarket: [],
+      })
+    );
     return stub;
   }
 }
