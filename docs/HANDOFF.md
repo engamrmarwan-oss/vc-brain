@@ -71,9 +71,14 @@ src/lib/             llm.ts         THE provider swap point: retry, jitter, fall
                      trust.ts       trust aggregate engine
                      trace.ts       evidence refs + decision-trace collector
                      thesis.ts      thesis-lens fit scoring + re-ranking
-                     sourcing.ts    provenance + channel quality stats
+                     sourcing.ts    provenance + channel quality stats (lite)
+                     sourcing-graph.ts  full network model: shrinkage quality,
+                                    attribution, exploration, outcome loop
+src/data/            seed.ts        founder seeds · sourcing-seed.ts network
+                                    + historical outcomes
 src/app/api/         health · score · rank · apply · discover · deck · resume
-                     document · trace · validate · sourcing
+                     document · trace · validate · sourcing · sourcing/graph
+                     outcome
 ```
 
 Ownership during the build: **Builder Alpha** owned `src/agents`, `src/lib`, `src/app/api`; **Builder Beta (Codex)** owned `src/components` and pages. Contracts were frozen in writing before parallel work; integration was a field-swap, not a merge.
@@ -84,11 +89,11 @@ Ownership during the build: **Builder Alpha** owned `src/agents`, `src/lib`, `sr
 
 **Self-correction loop — shipped.** Validator agent as above: independent evidence, downgrade-only adjudication, wrong-entity guard, honest "Not independently validated" badge when checks are unavailable, original-vs-revised deltas in the audit trail.
 
-**Sourcing & network intelligence — shipped (lite) + designed (full).** Live now: per-founder provenance chains ("GitHub topic: llm-inference → repo: ray-project/ray") and `/api/sourcing` channel stats ranked by *quality* — mean trust, invest rate, contradiction rate — with explicit small-sample caveats, never by volume. The full graph model is the committed follow-up (§6).
+**Sourcing & network intelligence — shipped (backend full, UI in progress).** Per-founder provenance chains ("GitHub topic: llm-inference → repo: ray-project/ray"), plus the full network model of §6: graph of channels/programs/institutions/people, shrinkage-adjusted channel quality, multi-touch outcome attribution, and underexplored-channel suggestions — all live behind `/api/sourcing`, `/api/sourcing/graph`, and `/api/outcome`. The dedicated workspace UI is the remaining piece.
 
-## 6. Follow-up: full Sourcing & Network Intelligence
+## 6. Sourcing & Network Intelligence — full model (backend shipped)
 
-The extended design (agreed between both builders, contracts drafted):
+The extended design, now implemented in `src/lib/sourcing-graph.ts` + `src/data/sourcing-seed.ts`:
 
 ```mermaid
 flowchart LR
@@ -100,13 +105,13 @@ flowchart LR
     O -->|attribution across all contributing nodes| Q
 ```
 
-- **Graph model:** `SourceNode` (channel / program / institution / person / founder), `SourceEdge` (discovered-via, referred-by, alumni-of, member-of), `OutcomeEvent` (stage transitions with trust score and check size at time of event).
-- **Channel quality:** funded-rate, diligence-rate, median trust, median evidence coverage, per-axis outcomes, and time-to-decision — with **Bayesian shrinkage** so one lucky founder doesn't outrank twenty consistently strong ones.
-- **Feedback loop:** "Mark funded" writes an `OutcomeEvent`, credits *every* contributing source node (even-split attribution first, weighted later — never 100% to the last touch), recomputes quality, and visibly reorders channel recommendations.
-- **Exploration scoring:** historical quality × confidence-adjusted conversion × low current coverage × similarity to proven programs, with a small-sample exploration bonus — surfacing e.g. *"ETH AI Center: 2 founders scanned, adjacent programs produced 4 high-trust opportunities — run a targeted scan"*, wired directly into the existing discovery agent.
+- **Graph model:** `SourceNode` (channel / program / institution / person / founder), `SourceEdge` (discovered-via, referred-by, alumni-of, member-of), `OutcomeEvent` (append-only stage log with trust score and conviction captured at event time). Live pipeline founders join the seeded graph dynamically, so it always reflects the current session.
+- **Channel quality:** shrinkage-adjusted blend of funded-rate, diligence-rate, and median trust (prior strength K=3 toward global rates) with sample-size uncertainty bands — so one lucky founder doesn't outrank twenty consistently strong ones, and n=1 channels read "±25, directional", never as fact.
+- **Feedback loop (live):** `POST /api/outcome` writes an `OutcomeEvent`, credits **every** contributing source node — channel, program, and referrer, never 100% to the last touch — and returns recomputed quality so the ranking visibly moves on stage. Verified: marking a founder funded lifted her channel 45→59. Attribution rule enforced in code: stage credit flows only through outcome attribution, so an *alumni-of* employer never inherits funded credit (caught as a bug in testing, fixed, regression-asserted).
+- **Exploration scoring (live):** adjacent-node evidence × low current coverage × small-sample bonus, via an explainable static similarity map — producing exactly the target suggestion: *"ETH AI Center: 0 founders sourced, but adjacent nodes DeepMind and KubeCon EU produced funded deals — run a targeted scan."* Sibling GitHub topics of proven scrape channels carry a `scanHint` that plugs directly into `/api/discover`; one scannable suggestion is always surfaced.
 - **Honest limitation:** the in-memory architecture learns within a session. Production requires an append-only event store to learn across deployments — a deliberate hackathon trade (deploy risk was the #1 historical failure mode), with a clean seam: `OutcomeEvent` is already append-only in shape.
 
-Estimated effort: ~2h backend (graph + shrinkage + outcome endpoint), ~2–3h UI (sourcing workspace), independently shippable.
+Remaining: the sourcing workspace UI (channel table, suggestions panel with "Scan this channel", "Mark funded" action) — contract frozen, in progress.
 
 ## 7. Resilience inventory
 
@@ -124,4 +129,4 @@ Estimated effort: ~2h backend (graph + shrinkage + outcome endpoint), ~2–3h UI
 
 - **Env:** `OPENAI_API_KEY`, `OPENAI_REASONING_MODEL`, `OPENAI_VOLUME_MODEL`, `TAVILY_API_KEY`, `GITHUB_TOKEN` (optional, 5000 req/hr), `ANTHROPIC_API_KEY` (optional, enables provider fallback), `MODEL_BACKEND=openai`. Set in `.env.local` and Vercel.
 - **Deploy:** push to `main` → Vercel auto-deploy → verify `/api/health` returns `{ok:true}`. Uploads on Vercel are capped ~4.5 MB by the platform (client enforces 4 MB).
-- **Demo flow:** Founder view → apply as Maya (deck + resume) → VC view → ranked pipeline → Maya's memo → "10,000 active users" flagged red → citation opens dormant-repo evidence → **Validate screen** → wrong-entity catch → audit trail → Tomas's memo for honest cold-start (64 ±14) → thesis re-rank → sourcing provenance.
+- **Demo flow:** Founder view → apply as Maya (deck + resume) → VC view → ranked pipeline → Maya's memo → "10,000 active users" flagged red → citation opens dormant-repo evidence → **Validate screen** → wrong-entity catch → audit trail → Tomas's memo for honest cold-start (64 ±14) → thesis re-rank → sourcing: channel quality table → **"Mark funded"** on a founder, watch her channel's ranking move → the ETH AI Center underexplored suggestion → "Scan this channel."
