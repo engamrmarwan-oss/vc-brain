@@ -15,6 +15,7 @@ import {
   setThesis,
 } from "@/lib/store";
 import { normalizeThesis, rankFounders, type ThesisConfig } from "@/lib/thesis";
+import { buildTrustReport } from "@/lib/trust";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,11 @@ async function rankResponse(thesis: ThesisConfig) {
       return { founder, assessment };
     })
   );
-  return NextResponse.json({ thesis, ranked: rankFounders(thesis, entries) });
+  const ranked = rankFounders(thesis, entries).map((entry) => ({
+    ...entry,
+    trust: buildTrustReport(entry.founder, entry.assessment.claims),
+  }));
+  return NextResponse.json({ thesis, ranked });
 }
 
 export async function GET() {

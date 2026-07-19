@@ -14,6 +14,7 @@ import {
   saveResumeSummary,
   upsertFounder,
 } from "@/lib/store";
+import { buildTrustReport } from "@/lib/trust";
 import type { Entry, Founder } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -192,12 +193,15 @@ export async function POST(req: Request) {
   }
 
   const assessment = await scoreFounder(founder);
+  const stubbed = wasStubFallback(assessment);
   return NextResponse.json({
     id: founder.id,
     founder,
     // A stub is not the real analysis — return null so the client re-fetches
     // /api/score (a fresh attempt) instead of persisting the stub locally.
-    assessment: wasStubFallback(assessment) ? null : assessment,
+    // Trust follows the same rule: no report derived from stub claims.
+    assessment: stubbed ? null : assessment,
+    trust: stubbed ? null : buildTrustReport(founder, assessment.claims),
     deck: { parsed: deck.parsed, source: deck.source, summary: deck.summary },
     resume: { parsed: resume.parsed, source: resume.source, summary: resume.summary },
   });

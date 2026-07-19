@@ -5,6 +5,7 @@
 import { NextResponse } from "next/server";
 import { scoreFounder, wasStubFallback } from "@/agents/score";
 import { getAssessment, getFounder, saveAssessment } from "@/lib/store";
+import { buildTrustReport } from "@/lib/trust";
 
 export const dynamic = "force-dynamic";
 
@@ -29,11 +30,19 @@ export async function POST(req: Request) {
 
   if (!fresh) {
     const cached = getAssessment(id);
-    if (cached) return NextResponse.json(cached);
+    if (cached) {
+      return NextResponse.json({
+        ...cached,
+        trust: buildTrustReport(founder, cached.claims),
+      });
+    }
   }
   const assessment = await scoreFounder(founder);
   // A stub (LLM-failure fallback) is served but never cached — the next
   // request gets a fresh scoring attempt instead of a poisoned cache.
   if (!wasStubFallback(assessment)) saveAssessment(assessment);
-  return NextResponse.json(assessment);
+  return NextResponse.json({
+    ...assessment,
+    trust: buildTrustReport(founder, assessment.claims),
+  });
 }
