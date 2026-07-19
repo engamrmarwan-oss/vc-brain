@@ -6,7 +6,7 @@
 
 import { NextResponse } from "next/server";
 import { processDeck, processResume } from "@/agents/deck";
-import { scoreFounder } from "@/agents/score";
+import { scoreFounder, wasStubFallback } from "@/agents/score";
 import {
   allFounders,
   saveDeckSummary,
@@ -47,6 +47,7 @@ export async function POST(req: Request) {
   // Accept JSON ({ companyName, deckName?, deckText?, resumeText?, ... }) or
   // multipart/form-data. A file field/filename matching resume|cv is the
   // resume; the first other file is the deck.
+  let formUnreadable = false;
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("multipart/form-data")) {
     try {
@@ -66,8 +67,9 @@ export async function POST(req: Request) {
         }
       }
       if (deckFile && body.deckName === undefined) body.deckName = deckFile.filename;
-    } catch {
-      // unreadable form -> validation 400 below
+    } catch (err) {
+      formUnreadable = true;
+      console.warn("apply: multipart form unreadable:", err);
     }
   } else {
     try {
@@ -80,8 +82,12 @@ export async function POST(req: Request) {
   const companyName = optStr(body.companyName);
   if (!companyName || companyName.length < 2) {
     return NextResponse.json(
-      { error: "body must include companyName (string, min 2 chars)" },
-      { status: 400 }
+      {
+        error: formUnreadable
+          ? "multipart form data could not be read (upload too large for the host, or malformed request)"
+          : "body must include companyName (string, min 2 chars)",
+      },
+      { status: formUnreadable ? 413 : 400 }
     );
   }
 
@@ -189,7 +195,9 @@ export async function POST(req: Request) {
   return NextResponse.json({
     id: founder.id,
     founder,
-    assessment,
+    // A stub is not the real analysis — return null so the client re-fetches
+    // /api/score (a fresh attempt) instead of persisting the stub locally.
+    assessment: wasStubFallback(assessment) ? null : assessment,
     deck: { parsed: deck.parsed, source: deck.source, summary: deck.summary },
     resume: { parsed: resume.parsed, source: resume.source, summary: resume.summary },
   });

@@ -400,23 +400,26 @@ function stubAssessment(founder: Founder): Omit<Assessment, "speedSeconds"> {
 
 // ---------- entry point ----------
 
+// Stub results are demo insurance, not the truth — callers must never cache
+// them (a poisoned cache would serve the stub until the founder changes).
+// WeakSet marker instead of a field: the Assessment type is frozen.
+const STUB_RESULTS = new WeakSet<Assessment>();
+export function wasStubFallback(a: Assessment): boolean {
+  return STUB_RESULTS.has(a);
+}
+
 export async function scoreFounder(founder: Founder): Promise<Assessment> {
   const t0 = Date.now();
   try {
     // Live signal gathering happens inside the timing window — speedSeconds
     // measures signal -> decision, not just the LLM call.
     const gathered = await gatherSignals(founder);
-    const llmOpts = {
+    // Retry/backoff and cross-backend fallback live inside callLLM.
+    const raw = await callLLM({
       system: SYSTEM,
       user: buildUserPrompt(founder, gathered.lines),
-      tier: "reasoning" as const,
+      tier: "reasoning",
       json: true,
-    };
-    // OpenAI occasionally throws transient errors; one retry before the
-    // stub fallback keeps real reasoning on screen during the demo.
-    const raw = await callLLM(llmOpts).catch(async () => {
-      await new Promise((r) => setTimeout(r, 500));
-      return callLLM(llmOpts);
     });
     const parsed = parseModelJson(raw);
     const fallback = stubAssessment(founder);
@@ -453,6 +456,8 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
   } catch (err) {
     // No key, provider outage, or malformed JSON — the demo still runs.
     console.warn(`scoreFounder(${founder.id}) fell back to stub:`, err);
-    return { ...stubAssessment(founder), speedSeconds: (Date.now() - t0) / 1000 };
+    const stub = { ...stubAssessment(founder), speedSeconds: (Date.now() - t0) / 1000 };
+    STUB_RESULTS.add(stub);
+    return stub;
   }
 }

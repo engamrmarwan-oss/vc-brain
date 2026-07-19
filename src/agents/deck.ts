@@ -5,7 +5,6 @@
 // FAIL-SOFT BY CONTRACT: bad PDF, parser error, or slow extraction returns
 // parsed:false and the pipeline continues on fallback claims. Never throws.
 
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { callLLM } from "@/lib/llm";
 
 // Executive summary the memo can render directly.
@@ -43,6 +42,9 @@ downstream. Do not invent facts absent from the text.`;
 
 export async function extractDeckText(buffer: Buffer): Promise<string | null> {
   try {
+    // Lazy import: if the host fails to bundle/trace pdf-parse, that failure
+    // lands here (-> "deck not parsed") instead of crashing the whole route.
+    const { default: pdfParse } = await import("pdf-parse/lib/pdf-parse.js");
     const result = await Promise.race([
       pdfParse(buffer),
       new Promise<never>((_, reject) =>
@@ -65,7 +67,7 @@ function strArr(v: unknown, max: number): string[] {
 
 export async function summarizeDeck(deckText: string): Promise<DeckSummary | null> {
   try {
-    const raw = await callWithRetry({
+    const raw = await callLLM({
       system: SYSTEM,
       user: `Pitch deck text:\n\n${deckText.slice(0, MAX_DECK_CHARS)}`,
       tier: "reasoning",
@@ -124,18 +126,11 @@ the resume SAYS — verification happens downstream. Do not invent.`;
 // enough for phones would eat tenure ranges like "2021-2024".)
 const stripEmails = (s: string) => s.replace(/\S+@\S+\.\S+/g, "[redacted]");
 
-// One retry on transient LLM errors, same posture as the scoring engine —
-// a one-off provider blip shouldn't cost the demo its extraction.
-async function callWithRetry(opts: Parameters<typeof callLLM>[0]): Promise<string> {
-  return callLLM(opts).catch(async () => {
-    await new Promise((r) => setTimeout(r, 500));
-    return callLLM(opts);
-  });
-}
+// Retry/backoff and cross-backend fallback live inside callLLM (llm.ts).
 
 export async function summarizeResume(resumeText: string): Promise<ResumeSummary | null> {
   try {
-    const raw = await callWithRetry({
+    const raw = await callLLM({
       system: RESUME_SYSTEM,
       user: `Resume text:\n\n${resumeText.slice(0, MAX_DECK_CHARS)}`,
       tier: "reasoning",

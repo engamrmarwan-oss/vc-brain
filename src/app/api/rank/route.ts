@@ -6,7 +6,7 @@
 // ranks on stub data). A malformed thesis normalizes to defaults: fail-soft.
 
 import { NextResponse } from "next/server";
-import { scoreFounder } from "@/agents/score";
+import { scoreFounder, wasStubFallback } from "@/agents/score";
 import {
   allFounders,
   getAssessment,
@@ -23,7 +23,8 @@ async function rankResponse(thesis: ThesisConfig) {
     allFounders().map(async (founder) => {
       const cached = getAssessment(founder.id);
       const assessment = cached ?? (await scoreFounder(founder));
-      if (!cached) saveAssessment(assessment);
+      // Stubs rank this round but are not cached — next rank retries them.
+      if (!cached && !wasStubFallback(assessment)) saveAssessment(assessment);
       return { founder, assessment };
     })
   );

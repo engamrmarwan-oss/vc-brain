@@ -44,6 +44,15 @@ function getStore(): Store {
     };
   }
   const s = g.__vcbrain;
+  // globalThis survives dev hot-reloads, so a long-running dev server can
+  // hold a store object created by OLDER code that lacks fields added
+  // since. Heal them instead of crashing on `.set` of undefined.
+  s.founders ??= new Map();
+  s.assessments ??= new Map();
+  s.deckSummaries ??= new Map();
+  s.resumeSummaries ??= new Map();
+  s.documents ??= new Map();
+  s.thesis ??= DEFAULT_THESIS;
   if (!s.seeded) {
     for (const f of FOUNDERS) s.founders.set(f.id, f);
     s.seeded = true;

@@ -3,7 +3,7 @@
 // ranked list tell the same story; pass fresh:true to force a re-score.
 
 import { NextResponse } from "next/server";
-import { scoreFounder } from "@/agents/score";
+import { scoreFounder, wasStubFallback } from "@/agents/score";
 import { getAssessment, getFounder, saveAssessment } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -32,6 +32,8 @@ export async function POST(req: Request) {
     if (cached) return NextResponse.json(cached);
   }
   const assessment = await scoreFounder(founder);
-  saveAssessment(assessment);
+  // A stub (LLM-failure fallback) is served but never cached — the next
+  // request gets a fresh scoring attempt instead of a poisoned cache.
+  if (!wasStubFallback(assessment)) saveAssessment(assessment);
   return NextResponse.json(assessment);
 }
