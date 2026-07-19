@@ -6,6 +6,7 @@
 import { fetchFootprint } from "@/agents/coldstart";
 import { fetchGitHubSignals } from "@/agents/github";
 import { callLLM } from "@/lib/llm";
+import { getDeckSummary } from "@/lib/store";
 import type { Assessment, Axis, AxisVerdict, Claim, Founder, Trend } from "@/lib/types";
 
 // Signals a scout would gather before scoring — fed into the prompt so claim
@@ -125,6 +126,11 @@ async function gatherSignals(
 }
 
 function buildUserPrompt(f: Founder, signals: string[]): string {
+  // Extracted deck summary (if a deck was submitted): axis evidence, so the
+  // market axis can weigh the STATED market and ideaVsMarket the described
+  // solution. It is the founder's own narrative, not verified fact — claim
+  // verification stays per-claim, and signals outrank the deck on conflict.
+  const deck = getDeckSummary(f.id);
   return [
     `Founder: ${f.name} — ${f.company} (${f.sector}, ${f.geo}, entry: ${f.entry})`,
     `Founder Score from memory: ${f.founderScore} (confidence ${f.founderScoreConfidence})`,
@@ -134,6 +140,27 @@ function buildUserPrompt(f: Founder, signals: string[]): string {
     ``,
     `Gathered signals:`,
     ...(signals.length ? signals.map((s) => `- ${s}`) : ["(none found)"]),
+    ...(deck
+      ? [
+          ``,
+          `Deck executive summary (machine-extracted from the submitted deck —`,
+          `the founder's OWN narrative, not verified fact; where it conflicts`,
+          `with gathered signals, trust the signals):`,
+          `- Snapshot: ${deck.snapshot.slice(0, 500)}`,
+          ...(deck.market ? [`- Stated market: ${deck.market.slice(0, 300)}`] : []),
+          ...(deck.tractionSignals.length
+            ? [`- Stated traction: ${deck.tractionSignals.join("; ").slice(0, 300)}`]
+            : []),
+          ...(deck.statedMetrics.length
+            ? [`- Stated metrics: ${deck.statedMetrics.join("; ").slice(0, 300)}`]
+            : []),
+          `Use it per axis, independently: market -> reason about the stated`,
+          `market size, wedge, and competition; ideaVsMarket -> weigh the`,
+          `described solution against what this market rewards right now;`,
+          `founder -> factor any stated team background. Reference specifics`,
+          `from the deck in your rationales.`,
+        ]
+      : []),
     ...(isThinEvidence(f)
       ? [
           ``,

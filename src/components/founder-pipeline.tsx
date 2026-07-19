@@ -17,6 +17,7 @@ import {
   parseApplicationsSnapshot,
   subscribeToApplications,
 } from "@/components/founder-application-storage";
+import { GitHubDiscoveryPanel } from "@/components/github-discovery-panel";
 import {
   DEFAULT_THESIS,
   GEOGRAPHY_LABELS,
@@ -219,13 +220,13 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
     });
   }, [entryFilter, query, rankedFounders]);
 
-  const outboundCount = allFounders.filter(
+  const outboundCount = rankedFounders.filter(
     (founder) => founder.entry === "outbound",
   ).length;
-  const inboundCount = allFounders.filter(
+  const inboundCount = rankedFounders.filter(
     (founder) => founder.entry === "inbound",
   ).length;
-  const coldStartCount = allFounders.filter(
+  const coldStartCount = rankedFounders.filter(
     (founder) => founder.entry === "cold-start",
   ).length;
   const inThesisCount = rankedFounders.filter((founder) => {
@@ -251,6 +252,22 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
         setRankError("Using local ordering — the live thesis engine did not respond.");
       }
     });
+  }
+
+  async function handleDiscoveryComplete() {
+    setRankError("");
+    const requestVersion = ++rankRequestVersion.current;
+
+    try {
+      const result = await requestRank();
+      if (requestVersion !== rankRequestVersion.current) return;
+      setRankedEntries(result.ranked);
+    } catch {
+      if (requestVersion !== rankRequestVersion.current) return;
+      setRankError(
+        "Founders were discovered, but the ranked pipeline could not refresh.",
+      );
+    }
   }
 
   return (
@@ -318,6 +335,8 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
           </>
         )}
 
+        <GitHubDiscoveryPanel onDiscovered={handleDiscoveryComplete} />
+
         <section
           aria-label="Pipeline summary"
           className="mb-5 grid grid-cols-2 gap-px overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#d8d6cf] shadow-[0_12px_32px_rgba(40,42,36,0.04)] lg:grid-cols-4"
@@ -326,7 +345,7 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
             detail="currently screening"
             icon={<LayersIcon />}
             label="Active pipeline"
-            value={String(allFounders.length).padStart(2, "0")}
+            value={String(rankedFounders.length).padStart(2, "0")}
           />
           <SummaryMetric
             detail="never applied"
