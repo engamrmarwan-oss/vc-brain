@@ -16,6 +16,7 @@ import {
   getApplicationsSnapshot,
   parseApplicationsSnapshot,
   resumeSummaryFromUnknown,
+  saveApplication,
   subscribeToApplications,
   type DeckSummary,
   type ResumeSummary,
@@ -157,11 +158,14 @@ function fallbackFor(founderId: string): Assessment {
   };
 }
 
-async function requestAssessment(founderId: string): Promise<Assessment> {
+async function requestAssessment(
+  founderId: string,
+  fresh = false,
+): Promise<Assessment> {
   const response = await fetch("/api/score", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: founderId }),
+    body: JSON.stringify({ id: founderId, fresh }),
     cache: "no-store",
   });
 
@@ -242,11 +246,18 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     setUsingFallback(false);
 
     try {
-      setAssessment(
-        storedApplication?.assessment ?? (await requestAssessment(founderId)),
-      );
+      const freshAssessment = await requestAssessment(founderId, true);
+      setAssessment(freshAssessment);
+
+      if (storedApplication) {
+        saveApplication({
+          ...storedApplication,
+          assessment: freshAssessment,
+          status: "scored",
+        });
+      }
     } catch {
-      setAssessment(fallbackFor(founderId));
+      setAssessment(storedApplication?.assessment ?? fallbackFor(founderId));
       setUsingFallback(true);
     } finally {
       setIsLoading(false);
@@ -256,14 +267,14 @@ export function FounderMemo({ founderId }: { founderId: string }) {
   useEffect(() => {
     let active = true;
 
-    Promise.resolve(storedApplication?.assessment ?? requestAssessment(founderId))
+    requestAssessment(founderId)
       .then((result) => {
         if (active) setAssessment(result);
       })
       .catch(() => {
         if (!active) return;
-        setAssessment(fallbackFor(founderId));
-        setUsingFallback(true);
+        setAssessment(storedApplication?.assessment ?? fallbackFor(founderId));
+        setUsingFallback(!storedApplication?.assessment);
       })
       .finally(() => {
         if (active) setIsLoading(false);

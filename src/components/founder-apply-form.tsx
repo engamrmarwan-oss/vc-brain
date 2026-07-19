@@ -14,7 +14,18 @@ import {
 } from "@/components/founder-application-storage";
 import type { Assessment, Founder } from "@/lib/types";
 
-type SubmitState = "idle" | "submitting" | "error";
+type SubmitState = "idle" | "submitting" | "success" | "error";
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+
+class ApplicationResponseError extends Error {
+  constructor(
+    message: string,
+    readonly application: StoredApplication,
+  ) {
+    super(message);
+    this.name = "ApplicationResponseError";
+  }
+}
 
 export function FounderApplyForm() {
   const router = useRouter();
@@ -58,8 +69,19 @@ export function FounderApplyForm() {
       });
 
       saveApplication(result);
-      router.push("/");
-    } catch {
+      if (result.status === "local-pending") {
+        router.push("/");
+        return;
+      }
+      setSubmitState("success");
+    } catch (error) {
+      if (error instanceof ApplicationResponseError) {
+        saveApplication(error.application);
+        setSubmitState("error");
+        setErrorMessage(error.message);
+        return;
+      }
+
       setSubmitState("error");
       setErrorMessage(
         "We could not preserve this application. Please try once more.",
@@ -75,6 +97,15 @@ export function FounderApplyForm() {
     if (!isPdf) {
       setDeck(null);
       setErrorMessage("Please upload the pitch deck as a PDF.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setDeck(null);
+      setErrorMessage(
+        "Deck must be under 4 MB for now — try an exported or compressed PDF.",
+      );
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
@@ -95,8 +126,35 @@ export function FounderApplyForm() {
       return;
     }
 
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setResume(null);
+      setErrorMessage(
+        "Resume must be under 4 MB for now — try an exported or compressed PDF.",
+      );
+      if (resumeInputRef.current) resumeInputRef.current.value = "";
+      return;
+    }
+
     setResume(file);
     setErrorMessage("");
+  }
+
+  function resetForm() {
+    setCompanyName("");
+    setGithubUrl("");
+    setLinkedinUrl("");
+    setWhatBuilding("");
+    setTraction("");
+    setStage("");
+    setSector("");
+    setLocation("");
+    setDeck(null);
+    setResume(null);
+    setIsDragging(false);
+    setErrorMessage("");
+    setSubmitState("idle");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (resumeInputRef.current) resumeInputRef.current.value = "";
   }
 
   return (
@@ -168,22 +226,33 @@ export function FounderApplyForm() {
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.16em] text-[#8b8d85]">
-                  New founder application
+                  {submitState === "success"
+                    ? "Founder application"
+                    : "New founder application"}
                 </p>
                 <h2 className="text-[24px] font-semibold tracking-[-0.035em]">
-                  Start the screen
+                  {submitState === "success"
+                    ? "The system has it from here"
+                    : "Start the screen"}
                 </h2>
               </div>
               <span className="rounded-full bg-[#e5eee7] px-3 py-1.5 text-[8.5px] font-bold uppercase tracking-[0.1em] text-[#42775b]">
-                ~90 seconds
+                {submitState === "success" ? "Received" : "~90 seconds"}
               </span>
             </div>
             <p className="mt-4 max-w-xl text-[10.5px] leading-relaxed text-[#777971]">
-              Deck and name is all we need. Share more and the system verifies
-              more — you don&apos;t fill forms, it does the digging.
+              {submitState === "success"
+                ? "No extra steps, status chasing, or investor-side navigation."
+                : "Deck and name is all we need. Share more and the system verifies more — you don't fill forms, it does the digging."}
             </p>
           </div>
 
+          {submitState === "success" ? (
+            <ApplicationConfirmation
+              companyName={companyName}
+              onReset={resetForm}
+            />
+          ) : (
           <form className="px-6 py-6 sm:px-8 sm:py-8" onSubmit={handleSubmit}>
             <div className="space-y-7">
               <FieldGroup
@@ -214,7 +283,7 @@ export function FounderApplyForm() {
                 label="Pitch deck"
                 number="02"
                 required
-                support="PDF · up to 25 MB."
+                support="PDF · under 4 MB."
               >
                 <div
                   className={`relative rounded-2xl border border-dashed p-5 transition-colors ${
@@ -397,7 +466,7 @@ export function FounderApplyForm() {
                       <p className="mt-1 truncate text-[9px] text-[#8b8d85]">
                         {resume
                           ? `${resume.name} · ${formatFileSize(resume.size)}`
-                          : "PDF · career signal only · contact details excluded"}
+                          : "PDF under 4 MB · career signal only · contact details excluded"}
                       </p>
                     </div>
                     <input
@@ -451,6 +520,7 @@ export function FounderApplyForm() {
               opportunities. No referral weighting.
             </p>
           </form>
+          )}
         </section>
       </main>
     </div>
@@ -488,6 +558,15 @@ async function submitApplication({
     sector,
     location,
   );
+  const localPending: StoredApplication = {
+    founder: localFounder,
+    documents: {
+      deck: deck.name,
+      ...(resume ? { resume: resume.name } : {}),
+    },
+    submittedAt,
+    status: "local-pending",
+  };
 
   try {
     const formData = new FormData();
@@ -510,7 +589,10 @@ async function submitApplication({
       body: formData,
     });
 
-    if (!response.ok) throw new Error("Apply endpoint unavailable");
+    if (!response.ok) {
+      const message = await responseErrorMessage(response);
+      throw new ApplicationResponseError(message, localPending);
+    }
 
     const payload = (await response.json()) as unknown;
     const founder = founderFromPayload(payload) ?? localFounder;
@@ -530,7 +612,9 @@ async function submitApplication({
       submittedAt,
       status: assessment ? "scored" : "local-pending",
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof ApplicationResponseError) throw error;
+
     return {
       founder: localFounder,
       documents: {
@@ -541,6 +625,25 @@ async function submitApplication({
       status: "local-pending",
     };
   }
+}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as unknown;
+    if (
+      payload &&
+      typeof payload === "object" &&
+      "error" in payload &&
+      typeof payload.error === "string" &&
+      payload.error.trim()
+    ) {
+      return payload.error.trim();
+    }
+  } catch {
+    // Fall through to a status-aware message when the body is not JSON.
+  }
+
+  return `Application upload failed (${response.status}). Please try again.`;
 }
 
 function resumeSummaryFromApplyPayload(payload: unknown): ResumeSummary | undefined {
@@ -681,6 +784,50 @@ function formatFileSize(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function ApplicationConfirmation({
+  companyName,
+  onReset,
+}: {
+  companyName: string;
+  onReset: () => void;
+}) {
+  return (
+    <div className="flex min-h-[540px] flex-col items-center justify-center px-6 py-12 text-center sm:px-10">
+      <span className="relative mb-6 grid size-16 place-items-center rounded-full bg-[#e3eee6] text-[#3f795a] ring-8 ring-[#eff4ef]">
+        <CheckCircleIcon />
+        <span className="absolute right-0 top-0 size-3 rounded-full border-2 border-[#f9f8f5] bg-[#64ae82]" />
+      </span>
+
+      <p className="mb-3 text-[9px] font-bold uppercase tracking-[0.18em] text-[#558069]">
+        Submission complete
+      </p>
+      <h3 className="text-[30px] font-semibold tracking-[-0.045em] text-[#20231e] sm:text-[36px]">
+        Application received
+      </h3>
+      <p className="mt-4 max-w-md text-[13px] font-medium leading-[1.7] text-[#555850]">
+        {companyName} is being screened now. You&apos;ll hear back within 24 hours.
+      </p>
+      <p className="mt-3 max-w-sm text-[10.5px] leading-[1.7] text-[#85877f]">
+        The system is gathering public signals, checking submitted claims, and
+        building the merit screen. Nothing else is needed from you.
+      </p>
+
+      <div className="mt-8 flex items-center gap-2 rounded-full bg-[#ecefe9] px-3.5 py-2 text-[9px] font-semibold text-[#607267]">
+        <span className="size-1.5 animate-pulse rounded-full bg-[#57a47a]" />
+        Evidence screen in progress
+      </div>
+
+      <button
+        className="mt-9 text-[10px] font-semibold text-[#73766e] underline decoration-[#c7c8c1] underline-offset-4 transition-colors hover:text-[#252721]"
+        onClick={onReset}
+        type="button"
+      >
+        Submit another application
+      </button>
+    </div>
+  );
+}
+
 function MinimalStep({
   detail,
   label,
@@ -763,6 +910,9 @@ function UploadIcon() {
 }
 function FileCheckIcon() {
   return <svg aria-hidden="true" fill="none" height="19" viewBox="0 0 20 20" width="19"><path d="M5 2.5h6l4 4v11H5v-15Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4"/><path d="M11 2.5v4h4m-7 5 1.5 1.5L12.8 10" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>;
+}
+function CheckCircleIcon() {
+  return <svg aria-hidden="true" fill="none" height="28" viewBox="0 0 28 28" width="28"><path d="M23.2 12.9v1.1a9.2 9.2 0 1 1-5.5-8.4" stroke="currentColor" strokeLinecap="round" strokeWidth="2"/><path d="m9.5 13.8 3 3 7.2-7.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"/></svg>;
 }
 function LinkIcon() {
   return <svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="m6.5 9.5 3-3M5.2 11.8l-1 .9a2.6 2.6 0 0 1-3.7-3.6L3 6.5a2.6 2.6 0 0 1 3.7 0M10.8 4.2l1-.9a2.6 2.6 0 0 1 3.7 3.6L13 9.5a2.6 2.6 0 0 1-3.7 0" stroke="currentColor" strokeLinecap="round" strokeWidth="1.3"/></svg>;
