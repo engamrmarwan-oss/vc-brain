@@ -25,6 +25,12 @@ import {
   ThesisControls,
   type ThesisState,
 } from "@/components/thesis-controls";
+import {
+  trustReportFromUnknown,
+  trustFromAssessment,
+  type TrustLabel,
+  type TrustReport,
+} from "@/components/trust-report";
 import type {
   Assessment,
   AxisVerdict,
@@ -39,12 +45,11 @@ type FounderSignals = {
   founder: AxisSignal;
   market: AxisSignal;
   ideaVsMarket: AxisSignal;
-  trust: "verified" | "contradicted" | "thin" | "pending";
-  trustLabel: string;
 };
 type RankedApiEntry = {
   founder: Founder;
   assessment: Assessment;
+  trust?: TrustReport | null;
   fit: {
     score: number;
     outsideThesis: boolean;
@@ -64,29 +69,21 @@ const FOUNDER_SIGNALS: Record<string, FounderSignals> = {
     founder: { verdict: "bullish", trend: "up" },
     market: { verdict: "bullish", trend: "up" },
     ideaVsMarket: { verdict: "bullish", trend: "up" },
-    trust: "verified",
-    trustLabel: "Trust verified",
   },
   "maya-chen": {
     founder: { verdict: "bullish", trend: "up" },
     market: { verdict: "bullish", trend: "up" },
     ideaVsMarket: { verdict: "neutral", trend: "flat" },
-    trust: "contradicted",
-    trustLabel: "1 contradiction",
   },
   "tomas-halvorsen": {
     founder: { verdict: "neutral", trend: "up" },
     market: { verdict: "bullish", trend: "up" },
     ideaVsMarket: { verdict: "neutral", trend: "flat" },
-    trust: "thin",
-    trustLabel: "Thin evidence",
   },
   "dan-okoro": {
     founder: { verdict: "neutral", trend: "flat" },
     market: { verdict: "bear", trend: "down" },
     ideaVsMarket: { verdict: "neutral", trend: "flat" },
-    trust: "verified",
-    trustLabel: "Trust verified",
   },
 };
 
@@ -94,8 +91,6 @@ const DEFAULT_SIGNALS: FounderSignals = {
   founder: { verdict: "neutral", trend: "flat" },
   market: { verdict: "neutral", trend: "flat" },
   ideaVsMarket: { verdict: "neutral", trend: "flat" },
-  trust: "pending",
-  trustLabel: "Screen pending",
 };
 
 const FILTERS: Array<{ label: string; value: EntryFilter }> = [
@@ -465,6 +460,11 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
                   mismatchReasons={thesisFit.mismatchReasons}
                   outsideThesis={thesisFit.outsideThesis}
                   rank={rank}
+                  trust={
+                    trustReportFromUnknown(apiEntry?.trust) ??
+                    trustFromAssessment(apiEntry?.assessment) ??
+                    trustFromAssessment(storedAssessment)
+                  }
                   signals={
                     apiEntry
                       ? signalsFromAssessment(apiEntry.assessment)
@@ -612,29 +612,10 @@ function thesisFromApi(thesis: ApiThesis): ThesisState {
 }
 
 function signalsFromAssessment(assessment: Assessment): FounderSignals {
-  const contradictions = assessment.claims.filter(
-    (claim) => claim.status === "contradicted",
-  ).length;
-  const unverifiable = assessment.claims.filter(
-    (claim) => claim.status === "unverifiable",
-  ).length;
-  const trust: FounderSignals["trust"] = contradictions
-    ? "contradicted"
-    : unverifiable || assessment.claims.length === 0
-      ? "thin"
-      : "verified";
-  const trustLabel = contradictions
-    ? `${contradictions} ${contradictions === 1 ? "contradiction" : "contradictions"}`
-    : trust === "thin"
-      ? "Thin evidence"
-      : "Trust verified";
-
   return {
     founder: assessment.axes.founder,
     market: assessment.axes.market,
     ideaVsMarket: assessment.axes.ideaVsMarket,
-    trust,
-    trustLabel,
   };
 }
 
@@ -686,12 +667,14 @@ function FounderRow({
   outsideThesis,
   rank,
   signals,
+  trust,
 }: {
   founder: Founder;
   mismatchReasons: string[];
   outsideThesis: boolean;
   rank: number;
   signals: FounderSignals;
+  trust?: TrustReport;
 }) {
   const band = Math.max(
     2,
@@ -840,7 +823,7 @@ function FounderRow({
           <span className="text-[9px] font-bold uppercase tracking-[0.12em] text-[#999b93] lg:hidden">
             Trust layer
           </span>
-          <TrustBadge label={signals.trustLabel} status={signals.trust} />
+          <TrustBadge trust={trust} />
         </div>
 
         <span className="hidden text-[#9b9d95] transition-transform group-hover:translate-x-0.5 group-hover:text-[#33352f] lg:block">
@@ -905,30 +888,39 @@ function AxisMark({ label, signal }: { label: string; signal: AxisSignal }) {
   );
 }
 
-function TrustBadge({
-  label,
-  status,
-}: {
-  label: string;
-  status: FounderSignals["trust"];
-}) {
+function TrustBadge({ trust }: { trust?: TrustReport }) {
+  const status: TrustLabel | "pending" = trust?.label ?? "pending";
   const style =
     status === "verified"
-      ? "bg-[#e6efe8] text-[#41775b]"
+      ? "bg-[#e6efe8] text-[#41775b] ring-[#cee0d3]"
       : status === "contradicted"
-        ? "bg-[#f8e6e2] text-[#ad4033]"
-        : status === "thin"
-          ? "bg-[#f2eadb] text-[#8b6934]"
-          : "bg-[#eceae4] text-[#777970]";
+        ? "bg-[#f8e6e2] text-[#ad4033] ring-[#efcbc4]"
+        : status === "caution"
+          ? "bg-[#f2eadb] text-[#8b6934] ring-[#e5d5b9]"
+          : status === "insufficient-evidence"
+            ? "border border-dashed border-[#c8c5bb] bg-[#f1efe9] text-[#74766e]"
+            : "bg-[#eceae4] text-[#777970] ring-[#dedbd2]";
+  const label = trust
+    ? trust.label === "insufficient-evidence" || trust.score === null
+      ? "Insufficient evidence"
+      : trust.label === "verified"
+        ? `Verified · ${Math.round(trust.score)} ±${Math.round(trust.band)}`
+        : trust.label === "caution"
+          ? `Caution · ${Math.round(trust.score)} ±${Math.round(trust.band)}`
+          : `Contradicted · ${Math.round(trust.score)} ±${Math.round(trust.band)}`
+    : "Trust pending";
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[8.5px] font-bold uppercase tracking-[0.08em] ${style}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[8px] font-bold uppercase tracking-[0.07em] ring-1 ring-inset ${style}`}
+      title={trust?.rationale ?? "Aggregate trust is waiting for evidence coverage."}
     >
       {status === "verified" ? (
         <CheckIcon />
       ) : status === "contradicted" ? (
         <AlertIcon />
+      ) : status === "caution" ? (
+        <EvidenceIcon />
       ) : (
         <EvidenceIcon />
       )}

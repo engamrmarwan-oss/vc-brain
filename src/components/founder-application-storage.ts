@@ -1,4 +1,9 @@
 import type { Assessment, Founder } from "@/lib/types";
+import type { TrustReport } from "@/components/trust-report";
+
+export type StoredAssessment = Assessment & {
+  trust?: TrustReport | null;
+};
 
 export type DeckSummary = {
   snapshot: string;
@@ -22,7 +27,7 @@ export type ApplicationDocuments = {
 
 export type StoredApplication = {
   founder: Founder;
-  assessment?: Assessment;
+  assessment?: StoredAssessment;
   deckSummary?: DeckSummary;
   resumeSummary?: ResumeSummary;
   documents?: ApplicationDocuments;

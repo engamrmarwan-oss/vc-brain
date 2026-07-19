@@ -10,8 +10,13 @@ import {
   saveApplication,
   type DeckSummary,
   type ResumeSummary,
+  type StoredAssessment,
   type StoredApplication,
 } from "@/components/founder-application-storage";
+import {
+  trustFromAssessment,
+  trustReportFromUnknown,
+} from "@/components/trust-report";
 import type { Assessment, Founder } from "@/lib/types";
 
 type SubmitState = "idle" | "submitting" | "success" | "error";
@@ -663,12 +668,25 @@ function resumeSummaryFromApplyPayload(payload: unknown): ResumeSummary | undefi
   return resumeSummaryFromUnknown(resumePayload.summary);
 }
 
-function assessmentFromPayload(payload: unknown): Assessment | undefined {
+function assessmentFromPayload(payload: unknown): StoredAssessment | undefined {
   if (!payload || typeof payload !== "object" || !("assessment" in payload)) {
     return undefined;
   }
 
-  return payload.assessment as Assessment;
+  const assessment = payload.assessment as Assessment | null | undefined;
+  if (
+    !assessment ||
+    typeof assessment !== "object" ||
+    typeof assessment.founderId !== "string" ||
+    !Array.isArray(assessment.claims)
+  ) {
+    return undefined;
+  }
+  const trust =
+    ("trust" in payload ? trustReportFromUnknown(payload.trust) : undefined) ??
+    trustFromAssessment(assessment);
+
+  return trust ? { ...assessment, trust } : assessment;
 }
 
 function deckSummaryFromApplyPayload(payload: unknown): DeckSummary | undefined {
@@ -684,7 +702,7 @@ function deckSummaryFromApplyPayload(payload: unknown): DeckSummary | undefined 
   return deckSummaryFromUnknown(deckPayload.summary);
 }
 
-async function scoreFounder(id: string): Promise<Assessment | undefined> {
+async function scoreFounder(id: string): Promise<StoredAssessment | undefined> {
   try {
     const response = await fetch("/api/score", {
       method: "POST",
@@ -694,7 +712,7 @@ async function scoreFounder(id: string): Promise<Assessment | undefined> {
     });
 
     if (!response.ok) return undefined;
-    return (await response.json()) as Assessment;
+    return (await response.json()) as StoredAssessment;
   } catch {
     return undefined;
   }

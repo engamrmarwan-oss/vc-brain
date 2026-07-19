@@ -20,7 +20,28 @@ import {
   subscribeToApplications,
   type DeckSummary,
   type ResumeSummary,
+  type StoredAssessment,
 } from "@/components/founder-application-storage";
+import {
+  AuditTrailDrawer,
+  EvidenceCitations,
+  NotIndependentlyValidatedBadge,
+  ValidationDelta,
+} from "@/components/memo-traceability";
+import {
+  traceReportFromUnknown,
+  validationReportFromUnknown,
+  type ClaimCitation,
+  type TraceReport,
+  type ValidationReport,
+  type ValidationResult,
+} from "@/components/traceability";
+import {
+  trustFromAssessment,
+  type TrustChannelName,
+  type TrustLabel,
+  type TrustReport,
+} from "@/components/trust-report";
 import type {
   Assessment,
   Axis,
@@ -73,7 +94,7 @@ const FOUNDER_PROFILES: Record<string, FounderProfile> = {
   },
 };
 
-const MAYA_FALLBACK: Assessment = {
+const MAYA_FALLBACK: StoredAssessment = {
   founderId: "maya-chen",
   axes: {
     founder: {
@@ -127,7 +148,7 @@ const MAYA_FALLBACK: Assessment = {
   flags: 1,
 };
 
-function fallbackFor(founderId: string): Assessment {
+function fallbackFor(founderId: string): StoredAssessment {
   if (founderId === "maya-chen") return MAYA_FALLBACK;
 
   return {
@@ -161,7 +182,7 @@ function fallbackFor(founderId: string): Assessment {
 async function requestAssessment(
   founderId: string,
   fresh = false,
-): Promise<Assessment> {
+): Promise<StoredAssessment> {
   const response = await fetch("/api/score", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -171,7 +192,7 @@ async function requestAssessment(
 
   if (!response.ok) throw new Error("Scoring request failed");
 
-  return (await response.json()) as Assessment;
+  return (await response.json()) as StoredAssessment;
 }
 
 async function requestDeckSummary(founderId: string): Promise<DeckSummary> {
@@ -214,6 +235,47 @@ async function requestResumeSummary(founderId: string): Promise<ResumeSummary> {
   throw new Error("Resume summary unavailable");
 }
 
+async function requestTrace(founderId: string): Promise<TraceReport> {
+  const response = await fetch(`/api/trace?id=${encodeURIComponent(founderId)}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error("Trace unavailable");
+
+  const trace = traceReportFromUnknown(await response.json());
+  if (!trace) throw new Error("Trace response invalid");
+  return trace;
+}
+
+async function requestLastValidation(
+  founderId: string,
+): Promise<ValidationReport | undefined> {
+  const response = await fetch(
+    `/api/validate?id=${encodeURIComponent(founderId)}`,
+    { cache: "no-store" },
+  );
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new Error("Validation unavailable");
+
+  const report = validationReportFromUnknown(await response.json());
+  if (!report) throw new Error("Validation response invalid");
+  return report;
+}
+
+async function runValidation(founderId: string): Promise<ValidationReport> {
+  const response = await fetch("/api/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: founderId }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) throw new Error("Validator did not complete");
+
+  const report = validationReportFromUnknown(await response.json());
+  if (!report) throw new Error("Validation response invalid or attempted an upgrade");
+  return report;
+}
+
 export function FounderMemo({ founderId }: { founderId: string }) {
   const applicationsSnapshot = useSyncExternalStore(
     subscribeToApplications,
@@ -227,7 +289,7 @@ export function FounderMemo({ founderId }: { founderId: string }) {
       ),
     [applicationsSnapshot, founderId],
   );
-  const [assessment, setAssessment] = useState<Assessment>(() =>
+  const [assessment, setAssessment] = useState<StoredAssessment>(() =>
     fallbackFor(founderId),
   );
   const [isLoading, setIsLoading] = useState(true);
@@ -240,6 +302,13 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     storedApplication?.resumeSummary,
   );
   const [isResumeLoading, setIsResumeLoading] = useState(true);
+  const [trace, setTrace] = useState<TraceReport | undefined>();
+  const [isAuditOpen, setIsAuditOpen] = useState(false);
+  const [validationReport, setValidationReport] = useState<
+    ValidationReport | undefined
+  >();
+  const [isValidating, setIsValidating] = useState(false);
+  const [validationError, setValidationError] = useState("");
 
   const loadAssessment = useCallback(async () => {
     setIsLoading(true);
@@ -248,6 +317,9 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     try {
       const freshAssessment = await requestAssessment(founderId, true);
       setAssessment(freshAssessment);
+      void requestTrace(founderId)
+        .then(setTrace)
+        .catch(() => setTrace(undefined));
 
       if (storedApplication) {
         saveApplication({
@@ -264,12 +336,37 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     }
   }, [founderId, storedApplication]);
 
+  const validateAssessment = useCallback(async () => {
+    setIsValidating(true);
+    setValidationError("");
+
+    try {
+      const report = await runValidation(founderId);
+      setValidationReport(report);
+      void requestTrace(founderId)
+        .then(setTrace)
+        .catch(() => undefined);
+    } catch {
+      setValidationError("Independent validation is temporarily unavailable.");
+    } finally {
+      setIsValidating(false);
+    }
+  }, [founderId]);
+
   useEffect(() => {
     let active = true;
 
     requestAssessment(founderId)
       .then((result) => {
-        if (active) setAssessment(result);
+        if (!active) return;
+        setAssessment(result);
+        void requestTrace(founderId)
+          .then((nextTrace) => {
+            if (active) setTrace(nextTrace);
+          })
+          .catch(() => {
+            if (active) setTrace(undefined);
+          });
       })
       .catch(() => {
         if (!active) return;
@@ -284,6 +381,30 @@ export function FounderMemo({ founderId }: { founderId: string }) {
       active = false;
     };
   }, [founderId, storedApplication]);
+
+  useEffect(() => {
+    let active = true;
+
+    requestTrace(founderId)
+      .then((result) => {
+        if (active) setTrace(result);
+      })
+      .catch(() => {
+        // Trace is additive and fail-soft: no trace means no citation UI.
+      });
+
+    requestLastValidation(founderId)
+      .then((result) => {
+        if (active) setValidationReport(result);
+      })
+      .catch(() => {
+        // Validation is optional and never blocks the primary memo.
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [founderId]);
 
   useEffect(() => {
     let active = true;
@@ -341,6 +462,39 @@ export function FounderMemo({ founderId }: { founderId: string }) {
   const verifiedCount = assessment.claims.filter(
     (claim) => claim.status === "verified",
   ).length;
+  const trustReport = trustFromAssessment(assessment);
+  const effectiveTrustReport = validationReport?.trustAfter ?? trustReport;
+  const citationByClaim = useMemo(
+    () =>
+      new Map(
+        (trace?.claimCitations ?? []).map((citation) => [
+          citation.claimText,
+          citation,
+        ]),
+      ),
+    [trace],
+  );
+  const validationByClaim = useMemo(
+    () =>
+      new Map(
+        (validationReport?.results ?? []).map((result) => [
+          result.claimText,
+          result,
+        ]),
+      ),
+    [validationReport],
+  );
+  const recommendationEvidenceIds = useMemo(() => {
+    if (!trace) return [];
+    return [
+      ...new Set([
+        ...trace.axisEvidenceIds.founder,
+        ...trace.axisEvidenceIds.market,
+        ...trace.axisEvidenceIds.ideaVsMarket,
+        ...trace.claimCitations.flatMap((citation) => citation.evidenceIds),
+      ]),
+    ].slice(0, 4);
+  }, [trace]);
 
   return (
     <div className="min-h-screen bg-[#efeee9] text-[#171915]">
@@ -368,6 +522,10 @@ export function FounderMemo({ founderId }: { founderId: string }) {
                   <span className="rounded-full border border-[#d4d2ca] bg-white/70 px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.14em] text-[#70726a]">
                     {profile.entry}
                   </span>
+                  {validationReport &&
+                    !validationReport.independentlyValidated && (
+                      <NotIndependentlyValidatedBadge />
+                    )}
                 </div>
                 <p className="text-[13px] text-[#74766e]">
                   <span className="font-semibold text-[#3e403a]">
@@ -382,7 +540,7 @@ export function FounderMemo({ founderId }: { founderId: string }) {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto sm:justify-end">
             <button
               className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#d4d2cb] bg-[#f8f7f3] px-4 text-[12px] font-semibold transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
               disabled={isLoading}
@@ -393,14 +551,31 @@ export function FounderMemo({ founderId }: { founderId: string }) {
               {isLoading ? "Screening…" : "Re-run screen"}
             </button>
             <button
-              aria-label="More actions"
-              className="grid size-10 place-items-center rounded-xl border border-[#d4d2cb] bg-[#f8f7f3] text-[#6d6f68] transition-colors hover:bg-white hover:text-[#171915]"
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#d4d2cb] bg-[#f8f7f3] px-4 text-[12px] font-semibold transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
+              disabled={isValidating}
+              onClick={() => void validateAssessment()}
               type="button"
             >
-              <DotsIcon />
+              <ValidationIcon spinning={isValidating} />
+              {isValidating ? "Validating…" : "Validate screen"}
             </button>
+            {trace && (
+              <button
+                className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#d4d2cb] bg-[#f8f7f3] px-3.5 text-[11px] font-semibold text-[#5f625a] transition-colors hover:bg-white hover:text-[#171915]"
+                onClick={() => setIsAuditOpen(true)}
+                type="button"
+              >
+                <AuditIcon /> Audit trail
+              </button>
+            )}
           </div>
         </div>
+
+        {validationError && (
+          <p className="mb-5 rounded-xl border border-[#e3d6bb] bg-[#f5eddd] px-4 py-3 text-[10px] font-medium text-[#7d6339]">
+            {validationError}
+          </p>
+        )}
 
         <section aria-labelledby="screening-axes" className="mb-5">
           <div className="mb-3 flex items-center justify-between">
@@ -424,9 +599,24 @@ export function FounderMemo({ founderId }: { founderId: string }) {
           </div>
 
           <div className="grid overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#d8d6cf] shadow-[0_12px_32px_rgba(40,42,36,0.05)] md:grid-cols-3 md:gap-px">
-            <AxisCard axis={assessment.axes.founder} label="Founder" />
-            <AxisCard axis={assessment.axes.market} label="Market" />
-            <AxisCard axis={assessment.axes.ideaVsMarket} label="Idea vs. market" />
+            <AxisCard
+              axis={assessment.axes.founder}
+              evidence={trace?.evidence ?? []}
+              evidenceIds={trace?.axisEvidenceIds.founder ?? []}
+              label="Founder"
+            />
+            <AxisCard
+              axis={assessment.axes.market}
+              evidence={trace?.evidence ?? []}
+              evidenceIds={trace?.axisEvidenceIds.market ?? []}
+              label="Market"
+            />
+            <AxisCard
+              axis={assessment.axes.ideaVsMarket}
+              evidence={trace?.evidence ?? []}
+              evidenceIds={trace?.axisEvidenceIds.ideaVsMarket ?? []}
+              label="Idea vs. market"
+            />
           </div>
         </section>
 
@@ -480,9 +670,20 @@ export function FounderMemo({ founderId }: { founderId: string }) {
 
             <div className="divide-y divide-[#e3e1da]">
               {assessment.claims.length ? (
-                assessment.claims.map((claim, index) => (
-                  <ClaimRow claim={claim} index={index} key={`${claim.text}-${index}`} />
-                ))
+                assessment.claims.map((claim, index) => {
+                  const citation = citationByClaim.get(claim.text);
+                  const validation = validationByClaim.get(claim.text);
+                  return (
+                    <ClaimRow
+                      citation={citation}
+                      claim={claim}
+                      evidence={trace?.evidence ?? []}
+                      index={index}
+                      key={`${claim.text}-${index}`}
+                      validation={validation}
+                    />
+                  );
+                })
               ) : (
                 <div className="px-6 py-12 text-center">
                   <div className="mx-auto mb-3 grid size-9 place-items-center rounded-full bg-[#eceae3] text-[#85877f]">
@@ -508,7 +709,14 @@ export function FounderMemo({ founderId }: { founderId: string }) {
           </section>
 
           <aside className="space-y-5">
-            <DecisionCard assessment={assessment} />
+            <DecisionCard
+              assessment={assessment}
+              evidence={trace?.evidence ?? []}
+              evidenceIds={recommendationEvidenceIds}
+              traceAvailable={Boolean(trace)}
+              trust={effectiveTrustReport}
+            />
+            <TrustEvidenceCard trust={effectiveTrustReport} />
             <SpeedCard
               isLoading={isLoading}
               speedSeconds={assessment.speedSeconds}
@@ -517,6 +725,10 @@ export function FounderMemo({ founderId }: { founderId: string }) {
           </aside>
         </div>
       </main>
+
+      {trace && isAuditOpen && (
+        <AuditTrailDrawer onClose={() => setIsAuditOpen(false)} trace={trace} />
+      )}
     </div>
   );
 }
@@ -947,7 +1159,17 @@ function DeckSummarySkeleton({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function AxisCard({ axis, label }: { axis: Axis; label: string }) {
+function AxisCard({
+  axis,
+  evidence,
+  evidenceIds,
+  label,
+}: {
+  axis: Axis;
+  evidence: TraceReport["evidence"];
+  evidenceIds: string[];
+  label: string;
+}) {
   return (
     <article className="min-h-[182px] bg-[#f9f8f5] p-5 sm:p-6">
       <div className="mb-8 flex items-start justify-between gap-4">
@@ -965,6 +1187,11 @@ function AxisCard({ axis, label }: { axis: Axis; label: string }) {
       <p className="max-w-sm text-[11px] leading-[1.55] text-[#71736c]">
         {axis.rationale}
       </p>
+      {evidenceIds.length > 0 && (
+        <div className="mt-3">
+          <EvidenceCitations evidence={evidence} evidenceIds={evidenceIds} />
+        </div>
+      )}
     </article>
   );
 }
@@ -1000,7 +1227,19 @@ function VerdictMark({ verdict }: { verdict: AxisVerdict }) {
   );
 }
 
-function ClaimRow({ claim, index }: { claim: Claim; index: number }) {
+function ClaimRow({
+  citation,
+  claim,
+  evidence,
+  index,
+  validation,
+}: {
+  citation?: ClaimCitation;
+  claim: Claim;
+  evidence: TraceReport["evidence"];
+  index: number;
+  validation?: ValidationResult;
+}) {
   const contradicted = claim.status === "contradicted";
   const verified = claim.status === "verified";
   const confidence = Math.round(claim.confidence * 100);
@@ -1038,6 +1277,13 @@ function ClaimRow({ claim, index }: { claim: Claim; index: number }) {
           <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-[0.1em] text-[#8d8f87]">
             <SourceIcon source={claim.source} /> {claim.source}
           </span>
+          {citation && (
+            <EvidenceCitations
+              evidence={evidence}
+              evidenceIds={citation.evidenceIds}
+              uncited={citation.uncited}
+            />
+          )}
         </div>
         <h3 className={`text-[14px] font-semibold leading-snug tracking-[-0.015em] ${contradicted ? "text-[#a5382c]" : "text-[#252721]"}`}>
           “{claim.text}”
@@ -1048,29 +1294,199 @@ function ClaimRow({ claim, index }: { claim: Claim; index: number }) {
           </span>
           <p>{claim.evidence}</p>
         </div>
+        {validation && (
+          <ValidationDelta evidence={evidence} result={validation} />
+        )}
       </div>
 
       <div className="self-center sm:pl-3">
-        <div className="mb-2 flex items-end justify-between">
-          <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-[#989a92]">
-            Confidence
-          </span>
-          <span className={`text-[13px] font-bold tabular-nums ${contradicted ? "text-[#b44133]" : "text-[#41433d]"}`}>
-            {confidence}%
-          </span>
-        </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-[#dfddd6]">
-          <div
-            className={`h-full rounded-full ${contradicted ? "bg-[#df5947]" : verified ? "bg-[#4b9872]" : "bg-[#9c9a90]"}`}
-            style={{ width: `${confidence}%` }}
-          />
-        </div>
+        {!verified && !contradicted ? (
+          <div className="rounded-xl border border-dashed border-[#cbc8bd] bg-[#f2f0ea] px-3 py-2.5">
+            <p className="text-[8.5px] font-bold uppercase tracking-[0.1em] text-[#898b83]">
+              Evidence gap
+            </p>
+            <p className="mt-1 text-[9.5px] font-medium leading-[1.45] text-[#666860]">
+              Missing independent corroboration
+            </p>
+            <p className="mt-1.5 text-[8.5px] leading-relaxed text-[#92948c]">
+              {confidence}% confidence in the insufficient-evidence verdict
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-2 flex items-end justify-between">
+              <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-[#989a92]">
+                Confidence in verdict
+              </span>
+              <span className={`text-[13px] font-bold tabular-nums ${contradicted ? "text-[#b44133]" : "text-[#41433d]"}`}>
+                {confidence}%
+              </span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-[#dfddd6]">
+              <div
+                className={`h-full rounded-full ${contradicted ? "bg-[#df5947]" : "bg-[#4b9872]"}`}
+                style={{ width: `${confidence}%` }}
+              />
+            </div>
+          </>
+        )}
       </div>
     </article>
   );
 }
 
-function DecisionCard({ assessment }: { assessment: Assessment }) {
+function TrustHeadlineChip({ trust }: { trust?: TrustReport }) {
+  const label = trust
+    ? trust.label === "insufficient-evidence" || trust.score === null
+      ? `Insufficient evidence · ${trust.coverage.present}/${trust.coverage.required}`
+      : `Trust ${Math.round(trust.score)} ±${Math.round(trust.band)}`
+    : "Trust pending";
+  const style = trust
+    ? trustTone(trust.label)
+    : "border-[#777b73] bg-white/[0.05] text-[#c4c7c0]";
+
+  return (
+    <span
+      className={`inline-flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[8.5px] font-bold uppercase tracking-[0.08em] ${style}`}
+      title={trust?.rationale ?? "Aggregate trust is waiting for evidence coverage."}
+    >
+      <span className="size-1.5 shrink-0 rounded-full bg-current opacity-80" />
+      {label}
+    </span>
+  );
+}
+
+function TrustEvidenceCard({ trust }: { trust?: TrustReport }) {
+  return (
+    <section
+      aria-labelledby="evidence-coverage"
+      className="overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#f9f8f5] shadow-[0_12px_32px_rgba(40,42,36,0.04)]"
+    >
+      <div className="border-b border-[#dfddd6] px-5 py-5 sm:px-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2
+              className="text-[15px] font-semibold tracking-[-0.02em]"
+              id="evidence-coverage"
+            >
+              Evidence coverage
+            </h2>
+            <p className="mt-1.5 text-[10px] leading-relaxed text-[#81837b]">
+              {trust?.rationale ??
+                "Trust pending while the evidence channels finish screening."}
+            </p>
+          </div>
+          <span className="shrink-0 rounded-full bg-[#eceae4] px-2.5 py-1.5 text-[9px] font-bold tabular-nums text-[#666860]">
+            {trust
+              ? `${trust.coverage.present}/${trust.coverage.required}`
+              : "—/—"}
+          </span>
+        </div>
+      </div>
+
+      {trust ? (
+        <>
+          <div className="divide-y divide-[#e7e5de] px-5 sm:px-6">
+            {trust.coverage.channels.map((channel) => (
+              <div
+                className="grid grid-cols-[24px_minmax(0,1fr)] gap-2.5 py-3.5"
+                key={channel.channel}
+              >
+                <span
+                  className={`grid size-6 place-items-center rounded-full ${
+                    channel.present
+                      ? "bg-[#e4eee6] text-[#3f795a]"
+                      : "border border-dashed border-[#c9c6bc] bg-[#f1efe9] text-[#999b93]"
+                  }`}
+                >
+                  {channel.present ? <CheckIcon /> : <CoverageDashIcon />}
+                </span>
+                <div>
+                  <p className="text-[9px] font-bold uppercase tracking-[0.11em] text-[#60635b]">
+                    {trustChannelLabel(channel.channel)}
+                  </p>
+                  <p className="mt-1 text-[9.5px] leading-relaxed text-[#85877f]">
+                    {channel.detail}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="border-t border-[#dfddd6] bg-[#f3f1ec] px-5 py-4 sm:px-6">
+            <p className="mb-2.5 text-[8.5px] font-bold uppercase tracking-[0.12em] text-[#8b8d85]">
+              Coverage unlocks
+            </p>
+            {trust.unlocks.length ? (
+              <div className="space-y-2">
+                {trust.unlocks.map((unlock, index) => (
+                  <div
+                    className="rounded-xl border border-[#dedbd2] bg-[#faf9f6] px-3 py-2.5"
+                    key={`${unlock.action}-${index}`}
+                  >
+                    <p className="text-[10px] font-semibold leading-relaxed text-[#444740]">
+                      {unlock.action}
+                    </p>
+                    <p className="mt-1 flex items-start gap-1.5 text-[9px] leading-relaxed text-[#6f8175]">
+                      <UnlockArrowIcon />
+                      unlocks {unlock.unlocks}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[9.5px] leading-relaxed text-[#8a8c84]">
+                No additional founder action requested by this screen.
+              </p>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="m-5 rounded-xl border border-dashed border-[#cbc8bf] bg-[#f3f1ec] px-4 py-5 text-center sm:m-6">
+          <p className="text-[10px] font-semibold text-[#686b63]">Trust pending</p>
+          <p className="mt-1 text-[9.5px] leading-relaxed text-[#92948c]">
+            Coverage and evidence unlocks will appear after the trust engine responds.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function trustTone(label: TrustLabel): string {
+  const styles: Record<TrustLabel, string> = {
+    verified: "border-[#4d8265] bg-[#203e2e] text-[#78c69b]",
+    caution: "border-[#856f3f] bg-[#3e3521] text-[#e1bd6d]",
+    contradicted: "border-[#8e493e] bg-[#442924] text-[#f18473]",
+    "insufficient-evidence":
+      "border-dashed border-[#777b73] bg-white/[0.04] text-[#c4c7c0]",
+  };
+  return styles[label];
+}
+
+function trustChannelLabel(channel: TrustChannelName): string {
+  const labels: Record<TrustChannelName, string> = {
+    github: "GitHub",
+    linkedin: "LinkedIn",
+    web: "Public web",
+    deck: "Pitch deck",
+  };
+  return labels[channel];
+}
+
+function DecisionCard({
+  assessment,
+  evidence,
+  evidenceIds,
+  traceAvailable,
+  trust,
+}: {
+  assessment: Assessment;
+  evidence: TraceReport["evidence"];
+  evidenceIds: string[];
+  traceAvailable: boolean;
+  trust?: TrustReport;
+}) {
   const recommendationLabel =
     assessment.recommendation === "conditional"
       ? "Proceed with conditions"
@@ -1086,17 +1502,20 @@ function DecisionCard({ assessment }: { assessment: Assessment }) {
       className="overflow-hidden rounded-[18px] bg-[#20231e] text-white shadow-[0_16px_34px_rgba(32,35,30,0.17)]"
     >
       <div className="p-5 sm:p-6">
-        <div className="mb-7 flex items-center justify-between">
+        <div className="mb-7 flex items-start justify-between gap-3">
           <h2
             className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#aeb2aa]"
             id="recommendation"
           >
             IC recommendation
           </h2>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.07] px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-[#c5c8c0] ring-1 ring-white/10">
-            <span className={`size-1.5 rounded-full ${isPass ? "bg-[#ec6a57]" : isInvest ? "bg-[#6bc291]" : "bg-[#e5b95c]"}`} />
-            {assessment.conviction} conviction
-          </span>
+          <div className="flex flex-wrap justify-end gap-2">
+            <TrustHeadlineChip trust={trust} />
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.07] px-2.5 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-[#c5c8c0] ring-1 ring-white/10">
+              <span className={`size-1.5 rounded-full ${isPass ? "bg-[#ec6a57]" : isInvest ? "bg-[#6bc291]" : "bg-[#e5b95c]"}`} />
+              {assessment.conviction} conviction
+            </span>
+          </div>
         </div>
 
         <div className="mb-7 flex items-start gap-3">
@@ -1114,6 +1533,15 @@ function DecisionCard({ assessment }: { assessment: Assessment }) {
                   ? "Signals align across the three independent axes. Advance to partner review."
                   : "Current signals do not clear the fund’s underwriting threshold."}
             </p>
+            {traceAvailable && (
+              <div className="mt-3">
+                <EvidenceCitations
+                  evidence={evidence}
+                  evidenceIds={evidenceIds}
+                  uncited={evidenceIds.length === 0}
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -1201,8 +1629,11 @@ function ArrowLeftIcon() {
 function RefreshIcon({ spinning }: { spinning: boolean }) {
   return <svg aria-hidden="true" className={spinning ? "animate-spin" : ""} fill="none" height="13" viewBox="0 0 14 14" width="13"><path d="M11.8 4.6A5.2 5.2 0 1 0 12 8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4"/><path d="M9.2 4.6h2.7V1.9" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>;
 }
-function DotsIcon() {
-  return <svg aria-hidden="true" fill="currentColor" height="14" viewBox="0 0 14 14" width="14"><circle cx="2.5" cy="7" r="1"/><circle cx="7" cy="7" r="1"/><circle cx="11.5" cy="7" r="1"/></svg>;
+function ValidationIcon({ spinning }: { spinning: boolean }) {
+  return <svg aria-hidden="true" className={spinning ? "animate-spin" : ""} fill="none" height="13" viewBox="0 0 14 14" width="13"><path d="M7 1.5 11.5 3v3.3c0 2.8-1.8 5.1-4.5 6.2-2.7-1.1-4.5-3.4-4.5-6.2V3L7 1.5Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2"/><path d="m4.9 6.7 1.4 1.4 2.9-3" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.2"/></svg>;
+}
+function AuditIcon() {
+  return <svg aria-hidden="true" fill="none" height="13" viewBox="0 0 14 14" width="13"><path d="M3 1.7h6l2 2v8.6H3V1.7Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.1"/><path d="M9 1.7v2h2M5 6h4M5 8h4M5 10h2.3" stroke="currentColor" strokeLinecap="round" strokeWidth="1"/></svg>;
 }
 function DeckIcon() {
   return <svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="M3.5 1.8h6l3 3v9.4h-9V1.8Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2"/><path d="M9.5 1.8v3h3M5.7 7.3h4.6M5.7 9.5h4.6M5.7 11.7h2.7" stroke="currentColor" strokeLinecap="round" strokeWidth="1.1"/></svg>;
@@ -1237,6 +1668,12 @@ function MinusIcon() {
 }
 function CheckIcon() {
   return <svg aria-hidden="true" fill="none" height="9" viewBox="0 0 10 10" width="9"><path d="m1.8 5.1 2.1 2.1L8.3 2.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>;
+}
+function CoverageDashIcon() {
+  return <svg aria-hidden="true" fill="none" height="9" viewBox="0 0 10 10" width="9"><path d="M2.5 5h5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.3"/></svg>;
+}
+function UnlockArrowIcon() {
+  return <svg aria-hidden="true" className="mt-0.5 shrink-0" fill="none" height="10" viewBox="0 0 12 10" width="11"><path d="M1.5 5h8m0 0L6.8 2.3M9.5 5 6.8 7.7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.1"/></svg>;
 }
 function AlertIcon() {
   return <svg aria-hidden="true" fill="none" height="9" viewBox="0 0 10 10" width="9"><path d="M5 1.5 9 8.3H1L5 1.5Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.1"/><path d="M5 3.7v2.1m0 1v.1" stroke="currentColor" strokeLinecap="round" strokeWidth="1.1"/></svg>;
