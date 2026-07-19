@@ -26,7 +26,8 @@ function parseOwnerRepo(url: string): { owner: string; repo: string } | null {
   }
 }
 
-function ghFetch(path: string): Promise<Response> {
+// Shared by discover.ts — same auth, timeout, and fail-soft posture.
+export function ghFetch(path: string): Promise<Response> {
   const headers: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "User-Agent": "vc-brain",
@@ -40,6 +41,30 @@ function ghFetch(path: string): Promise<Response> {
     signal: AbortSignal.timeout(TIMEOUT_MS),
     cache: "no-store",
   });
+}
+
+export interface GitHubUser {
+  name: string | null;
+  location: string | null;
+  bio: string | null;
+  company: string | null;
+}
+
+// Owner profile for discovered candidates. Never throws.
+export async function fetchGitHubUser(login: string): Promise<GitHubUser | null> {
+  try {
+    const res = await ghFetch(`/users/${encodeURIComponent(login)}`);
+    if (!res.ok) return null;
+    const u = await res.json();
+    return {
+      name: typeof u.name === "string" && u.name ? u.name : null,
+      location: typeof u.location === "string" && u.location ? u.location : null,
+      bio: typeof u.bio === "string" && u.bio ? u.bio : null,
+      company: typeof u.company === "string" && u.company ? u.company : null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchGitHubSignals(url: string): Promise<GitHubSignals | null> {

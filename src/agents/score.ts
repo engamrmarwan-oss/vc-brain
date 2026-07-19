@@ -134,17 +134,18 @@ function buildUserPrompt(f: Founder, signals: string[]): string {
     ``,
     `Gathered signals:`,
     ...(signals.length ? signals.map((s) => `- ${s}`) : ["(none found)"]),
-    ...(f.entry === "cold-start"
+    ...(isThinEvidence(f)
       ? [
           ``,
-          `COLD-START FOUNDER: no repo, no funding history, no deck. Evidence is`,
-          `thin by nature — say so honestly in every rationale. Score the founder`,
-          `axis from public-footprint signals: technical depth, communication`,
-          `quality, domain knowledge. Emit each meaningful footprint signal as a`,
-          `claim: status "verified" if directly observed in a snippet or signal,`,
-          `otherwise "unverifiable" — NEVER "contradicted": this founder claimed`,
-          `nothing, and missing evidence (no repo, no funding) is thinness, not a`,
-          `refuted lie. Source "web:tavily" for live snippets. Cap`,
+          `THIN-EVIDENCE FOUNDER: no deck was submitted (cold-start or scraped`,
+          `outbound). All evidence comes from public signals — say so honestly in`,
+          `every rationale. Score the founder axis from those signals: technical`,
+          `depth, repo quality, communication, domain knowledge. Emit each`,
+          `meaningful signal as a claim: status "verified" if directly observed`,
+          `in a snippet or signal, otherwise "unverifiable" — NEVER`,
+          `"contradicted": this founder claimed nothing, and missing evidence`,
+          `(no funding, few users) is thinness, not a refuted lie. Source`,
+          `"web:tavily" for live web snippets, "GitHub" for repo signals. Cap`,
           `every confidence at 0.6 — the score rests on limited signals and the`,
           `memo must reflect that. Live web snippets may describe a different`,
           `person with the same name; discount any snippet that does not clearly`,
@@ -223,16 +224,22 @@ function applyStaleGitHubPenalty(claims: Claim[], liveGitHub: boolean): Claim[] 
   );
 }
 
-// Cold-start honesty: thin evidence means no claim gets to look certain,
-// no matter what the model returned. The 0.6 cap also makes "high"
-// conviction unreachable in deriveDecision (needs mean confidence >= 0.75)
-// — the wide band is enforced in code, not just requested in the prompt.
-// And with zero deck claims there is nothing to contradict: a footprint
-// observation the model marks "contradicted" (no repo, no funding) is
-// thinness, not a caught lie — downgrade it so phantom contradictions
-// can't trigger the pass rule or inflate flags.
-function applyColdStartHonesty(founder: Founder, claims: Claim[]): Claim[] {
-  if (founder.entry !== "cold-start") return claims;
+// Thin evidence = cold-start founders AND scraped outbound candidates with
+// no deck: everything rests on public signals.
+function isThinEvidence(f: Founder): boolean {
+  return f.entry === "cold-start" || f.deckClaims.length === 0;
+}
+
+// Thin-evidence honesty: no claim gets to look certain, no matter what the
+// model returned. The 0.6 cap also makes "high" conviction unreachable in
+// deriveDecision (needs mean confidence >= 0.75) — the wide band is
+// enforced in code, not just requested in the prompt. And with zero deck
+// claims there is nothing to contradict: a footprint observation the model
+// marks "contradicted" (no funding, few users) is thinness, not a caught
+// lie — downgrade it so phantom contradictions can't trigger the pass rule
+// or inflate flags.
+function applyThinEvidenceHonesty(founder: Founder, claims: Claim[]): Claim[] {
+  if (!isThinEvidence(founder)) return claims;
   return claims.map((c) => ({
     ...c,
     status:
@@ -334,7 +341,7 @@ function stubAssessment(founder: Founder): Omit<Assessment, "speedSeconds"> {
       market: { verdict: "neutral", trend: "flat", rationale: "No signals gathered yet." },
       ideaVsMarket: { verdict: "neutral", trend: "flat", rationale: "No signals gathered yet." },
     } satisfies Assessment["axes"]);
-  const claims = applyColdStartHonesty(
+  const claims = applyThinEvidenceHonesty(
     founder,
     STUB_CLAIMS[founder.id] ??
       founder.deckClaims.map((text) => ({
@@ -386,7 +393,7 @@ export async function scoreFounder(founder: Founder): Promise<Assessment> {
     // A model that returns axes but drops the claims array still owes a
     // Trust Score — fall back to stub claims rather than an empty list.
     const rawFinalClaims = claims.length || !founder.deckClaims.length ? claims : fallback.claims;
-    const finalClaims = applyColdStartHonesty(
+    const finalClaims = applyThinEvidenceHonesty(
       founder,
       founder.githubUrl
         ? applyStaleGitHubPenalty(rawFinalClaims, gathered.liveGitHub)
