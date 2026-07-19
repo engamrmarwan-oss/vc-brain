@@ -22,45 +22,106 @@ type DiscoverResponse = {
 };
 
 type ScanState = "idle" | "scanning" | "success" | "empty" | "error";
+type ScanFilters = {
+  topics: string[];
+  language?: string;
+  minStars: number;
+  pushedAfter?: string;
+  limit: 5;
+};
+type DiscoveryPreset = {
+  label: string;
+  topic: string;
+  minStars: number;
+  detail: string;
+};
+
+const DISCOVERY_PRESETS: DiscoveryPreset[] = [
+  {
+    label: "AI / ML",
+    topic: "machine-learning",
+    minStars: 500,
+    detail: "machine-learning · 500+ stars",
+  },
+  {
+    label: "LLM tools",
+    topic: "llm",
+    minStars: 200,
+    detail: "llm · 200+ stars",
+  },
+  {
+    label: "Dev tools",
+    topic: "developer-tools",
+    minStars: 500,
+    detail: "developer-tools · 500+ stars",
+  },
+  {
+    label: "Web3",
+    topic: "web3",
+    minStars: 300,
+    detail: "web3 · 300+ stars",
+  },
+];
 
 export function GitHubDiscoveryPanel({
   onDiscovered,
 }: {
   onDiscovered: (result: DiscoverResponse) => Promise<void>;
 }) {
-  const [topics, setTopics] = useState("ai-infra, llm-inference");
+  const [topics, setTopics] = useState("machine-learning");
   const [language, setLanguage] = useState("");
-  const [minStars, setMinStars] = useState("50");
+  const [minStars, setMinStars] = useState("100");
   const [pushedAfter, setPushedAfter] = useState("");
-  const [geo, setGeo] = useState("");
   const [scanState, setScanState] = useState<ScanState>("idle");
   const [result, setResult] = useState<DiscoverResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const currentFilters: ScanFilters = {
+    topics: parseTopics(topics),
+    language: language || undefined,
+    minStars: Math.max(0, Number(minStars) || 0),
+    pushedAfter: pushedAfter || undefined,
+    limit: 5,
+  };
+  const queryPreview = buildQueryPreview(currentFilters);
 
-  async function handleScan(event: FormEvent<HTMLFormElement>) {
+  function handleScan(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    void runScan(currentFilters);
+  }
+
+  function handlePreset(preset: DiscoveryPreset) {
+    setTopics(preset.topic);
+    setLanguage("");
+    setMinStars(String(preset.minStars));
+    setPushedAfter("");
+    void runScan({
+      topics: [preset.topic],
+      minStars: preset.minStars,
+      limit: 5,
+    });
+  }
+
+  async function runScan(filters: ScanFilters) {
     setScanState("scanning");
     setErrorMessage("");
     setResult(null);
 
     try {
-      const response = await fetch("/api/discover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          topics: parseTopics(topics),
-          language: language || undefined,
-          minStars: Math.max(0, Number(minStars) || 0),
-          pushedAfter: pushedAfter || undefined,
-          geo: geo.trim() || undefined,
-        }),
-      });
+      const topicScans = filters.topics.length
+        ? filters.topics.map((topic) =>
+            requestDiscovery({ ...filters, topics: [topic] }),
+          )
+        : [requestDiscovery(filters)];
+      const settledScans = await Promise.allSettled(topicScans);
+      const completedScans = settledScans.flatMap((scan) =>
+        scan.status === "fulfilled" ? [scan.value] : [],
+      );
 
-      if (!response.ok) {
-        throw new Error(`Discovery failed with ${response.status}`);
+      if (completedScans.length === 0) {
+        throw new Error("All discovery scans failed");
       }
 
-      const payload = parseDiscoverResponse(await response.json());
+      const payload = mergeDiscoverResponses(completedScans);
       setResult(payload);
 
       if (payload.candidates.length === 0) {
@@ -123,19 +184,60 @@ export function GitHubDiscoveryPanel({
         </div>
 
         <div>
+          <div className="mb-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <p className="text-[8px] font-bold uppercase tracking-[0.13em] text-[#83968a]">
+                Quick scans
+              </p>
+              <p className="text-[8px] text-[#62766a]">
+                Proven GitHub topics · one click
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {DISCOVERY_PRESETS.map((preset) => {
+                const isActive =
+                  currentFilters.topics.length === 1 &&
+                  currentFilters.topics[0] === preset.topic &&
+                  currentFilters.minStars === preset.minStars;
+
+                return (
+                  <button
+                    aria-pressed={isActive}
+                    className={`rounded-xl border px-3 py-2.5 text-left transition-colors disabled:cursor-wait disabled:opacity-55 ${
+                      isActive
+                        ? "border-[#6fbd90] bg-[#294737] text-white"
+                        : "border-white/[0.08] bg-white/[0.045] text-[#c1cec5] hover:bg-white/[0.075]"
+                    }`}
+                    disabled={scanState === "scanning"}
+                    key={preset.label}
+                    onClick={() => handlePreset(preset)}
+                    type="button"
+                  >
+                    <span className="block text-[9.5px] font-bold">
+                      {preset.label}
+                    </span>
+                    <span className="mt-1 block truncate text-[7.5px] text-[#71877a]">
+                      {preset.detail}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <form
-            className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(200px,1.4fr)_150px_105px_160px_minmax(130px,0.8fr)]"
+            className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(220px,1.4fr)_150px_105px_170px_80px]"
             onSubmit={handleScan}
           >
             <DiscoveryField
-              hint="Comma-separated · max 3"
+              hint="Comma-separated = OR · aliases accepted"
               label="Topics / industry"
             >
               <input
                 className={inputClasses}
                 disabled={scanState === "scanning"}
                 onChange={(event) => setTopics(event.target.value)}
-                placeholder="ai-infra, fintech"
+                placeholder="ai, llm-tools, fintech"
                 type="text"
                 value={topics}
               />
@@ -178,16 +280,24 @@ export function GitHubDiscoveryPanel({
               />
             </DiscoveryField>
 
-            <DiscoveryField label="Geo">
+            <DiscoveryField hint="Fixed" label="Results">
               <input
-                className={inputClasses}
-                disabled={scanState === "scanning"}
-                onChange={(event) => setGeo(event.target.value)}
-                placeholder="Berlin"
-                type="text"
-                value={geo}
+                aria-readonly="true"
+                className={`${inputClasses} cursor-default text-center tabular-nums`}
+                readOnly
+                type="number"
+                value="5"
               />
             </DiscoveryField>
+
+            <div className="flex min-w-0 items-center gap-2 rounded-xl border border-white/[0.07] bg-black/10 px-3 py-2 sm:col-span-2 xl:col-span-5">
+              <span className="shrink-0 text-[7.5px] font-bold uppercase tracking-[0.12em] text-[#6f8578]">
+                GitHub query
+              </span>
+              <code className="truncate text-[8.5px] text-[#9cb2a4]" title={queryPreview}>
+                {queryPreview}
+              </code>
+            </div>
 
             <button
               className="flex h-11 items-center justify-center gap-2 rounded-xl bg-[#72c394] px-5 text-[10.5px] font-bold text-[#15221a] shadow-[0_9px_22px_rgba(86,174,122,0.22)] transition-colors hover:bg-[#88d2a7] disabled:cursor-wait disabled:bg-[#496858] disabled:text-[#a7b8ad] sm:col-span-2 xl:col-span-5"
@@ -256,7 +366,7 @@ function DiscoveryStatus({
   if (scanState === "idle") {
     return (
       <p className="mt-3 text-center text-[8.5px] text-[#687b70]">
-        Live scan typically takes 7–8 seconds · up to 5 founders per run
+        Live scan typically takes 7–8 seconds · up to 5 founders per topic
       </p>
     );
   }
@@ -286,7 +396,7 @@ function DiscoveryStatus({
     return (
       <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.035] px-4 py-3" role="status">
         <p className="text-[10px] font-semibold text-[#d9dfda]">
-          No repos matched — try broader filters.
+          No matches — try a preset like &apos;AI / ML&apos; above.
         </p>
         {result?.note && (
           <p className="mt-1 text-[8.5px] leading-relaxed text-[#76897d]">
@@ -327,12 +437,84 @@ function DiscoveryStatus({
   );
 }
 
+const TOPIC_ALIASES: Record<string, string> = {
+  ai: "machine-learning",
+  "ai-infra": "machine-learning",
+  "ai-ml": "machine-learning",
+  ml: "machine-learning",
+  "llm-inference": "llm",
+  "llm-tools": "llm",
+  devtools: "developer-tools",
+  "developer-tooling": "developer-tools",
+  crypto: "web3",
+  blockchain: "web3",
+};
+
+async function requestDiscovery(filters: ScanFilters): Promise<DiscoverResponse> {
+  const response = await fetch("/api/discover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(filters),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Discovery failed with ${response.status}`);
+  }
+
+  return parseDiscoverResponse(await response.json());
+}
+
+function mergeDiscoverResponses(responses: DiscoverResponse[]): DiscoverResponse {
+  const candidates = new Map<string, DiscoveredCandidate>();
+  const notes = new Set<string>();
+
+  for (const response of responses) {
+    for (const candidate of response.candidates) {
+      candidates.set(candidate.founder.id, candidate);
+    }
+    if (response.note) notes.add(response.note);
+  }
+
+  return {
+    candidates: [...candidates.values()],
+    query: responses.map((response) => response.query).join(" OR "),
+    note: notes.size ? [...notes].join(" ") : undefined,
+  };
+}
+
 function parseTopics(value: string): string[] {
-  return value
-    .split(",")
-    .map((topic) => topic.trim())
+  return [...new Set(
+    value
+      .split(",")
+      .map(normalizeTopic)
+      .filter(Boolean),
+  )].slice(0, 3);
+}
+
+function normalizeTopic(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return TOPIC_ALIASES[normalized] ?? normalized;
+}
+
+function buildQueryPreview(filters: ScanFilters): string {
+  const suffix = [
+    filters.language ? `language:${filters.language}` : "",
+    `stars:>${filters.minStars}`,
+    filters.pushedAfter ? `pushed:>${filters.pushedAfter}` : "",
+  ]
     .filter(Boolean)
-    .slice(0, 3);
+    .join(" ");
+
+  if (filters.topics.length === 0) return suffix;
+
+  return filters.topics
+    .map((topic) => `topic:${topic} ${suffix}`)
+    .join(" OR ");
 }
 
 function parseDiscoverResponse(value: unknown): DiscoverResponse {
