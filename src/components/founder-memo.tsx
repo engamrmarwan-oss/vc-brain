@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { AppHeader } from "@/components/app-header";
+import { FounderOutcomeActions } from "@/components/founder-outcome-actions";
 import {
   deckSummaryFromUnknown,
   EMPTY_APPLICATIONS_SNAPSHOT,
@@ -541,6 +542,7 @@ export function FounderMemo({ founderId }: { founderId: string }) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto sm:justify-end">
+            <FounderOutcomeActions founderId={founderId} />
             <button
               className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#d4d2cb] bg-[#f8f7f3] px-4 text-[12px] font-semibold transition-colors hover:bg-white disabled:cursor-wait disabled:opacity-60"
               disabled={isLoading}

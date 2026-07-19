@@ -18,6 +18,7 @@ import {
   subscribeToApplications,
 } from "@/components/founder-application-storage";
 import { GitHubDiscoveryPanel } from "@/components/github-discovery-panel";
+import { PipelineReveal } from "@/components/pipeline-reveal";
 import {
   DEFAULT_THESIS,
   GEOGRAPHY_LABELS,
@@ -100,11 +101,19 @@ const FILTERS: Array<{ label: string; value: EntryFilter }> = [
   { label: "Cold-start", value: "cold-start" },
 ];
 
-export function FounderPipeline({ founders }: { founders: Founder[] }) {
-  const [query, setQuery] = useState("");
+export function FounderPipeline({
+  founders,
+  initialQuery = "",
+  initialThesisOpen = false,
+}: {
+  founders: Founder[];
+  initialQuery?: string;
+  initialThesisOpen?: boolean;
+}) {
+  const [query, setQuery] = useState(initialQuery);
   const [entryFilter, setEntryFilter] = useState<EntryFilter>("all");
   const [thesis, setThesis] = useState<ThesisState>(DEFAULT_THESIS);
-  const [isThesisOpen, setIsThesisOpen] = useState(false);
+  const [isThesisOpen, setIsThesisOpen] = useState(initialThesisOpen);
   const [isRefreshing, startRefresh] = useTransition();
   const [rankedEntries, setRankedEntries] = useState<RankedApiEntry[] | null>(
     null,
@@ -267,6 +276,7 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
 
   return (
     <div className="min-h-screen bg-[#efeee9] text-[#171915]">
+      <PipelineReveal />
       <AppHeader />
 
       <main className="mx-auto w-full max-w-[1360px] px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12">
@@ -291,7 +301,13 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Link
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#d3d1c9] bg-[#f8f7f3] px-4 text-[12px] font-semibold transition-colors hover:bg-white"
+              href="/sourcing"
+            >
+              <NetworkIcon /> Sourcing intelligence
+            </Link>
             <button
               aria-expanded={isThesisOpen}
               aria-controls="thesis-engine"
@@ -978,6 +994,9 @@ function SlidersIcon() {
 }
 function PlusIcon() {
   return <svg aria-hidden="true" fill="none" height="13" viewBox="0 0 14 14" width="13"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4"/></svg>;
+}
+function NetworkIcon() {
+  return <svg aria-hidden="true" fill="none" height="13" viewBox="0 0 14 14" width="13"><circle cx="3" cy="7" r="1.5" stroke="currentColor"/><circle cx="10.5" cy="3" r="1.5" stroke="currentColor"/><circle cx="10.5" cy="11" r="1.5" stroke="currentColor"/><path d="m4.4 6.3 4.7-2.5M4.4 7.7l4.7 2.5" stroke="currentColor" strokeLinecap="round"/></svg>;
 }
 function LayersIcon() {
   return <svg aria-hidden="true" fill="none" height="16" viewBox="0 0 18 18" width="16"><path d="m9 2 6.5 3.4L9 8.8 2.5 5.4 9 2Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.3"/><path d="m3 8.7 6 3.1 6-3.1M3 12l6 3.1 6-3.1" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.3"/></svg>;
