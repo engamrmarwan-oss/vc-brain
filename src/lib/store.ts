@@ -26,6 +26,7 @@ type Store = {
   resumeSummaries: Map<string, ResumeSummary>; // per-founder career signal
   documents: Map<string, Partial<Record<DocumentType, StoredDocument>>>;
   traces: Map<string, TraceReport>; // audit trail of the latest scoring run
+  validations: Map<string, unknown>; // last ValidationReport per founder
   thesis: ThesisConfig;
   seeded: boolean;
 };
@@ -42,6 +43,7 @@ function getStore(): Store {
       resumeSummaries: new Map(),
       documents: new Map(),
       traces: new Map(),
+      validations: new Map(),
       thesis: DEFAULT_THESIS,
       seeded: false,
     };
@@ -56,6 +58,7 @@ function getStore(): Store {
   s.resumeSummaries ??= new Map();
   s.documents ??= new Map();
   s.traces ??= new Map();
+  s.validations ??= new Map();
   s.thesis ??= DEFAULT_THESIS;
   if (!s.seeded) {
     for (const f of FOUNDERS) s.founders.set(f.id, f);
@@ -127,6 +130,14 @@ export function getTrace(founderId: string): TraceReport | undefined {
 
 export function saveTrace(t: TraceReport): void {
   getStore().traces.set(t.founderId, t);
+}
+
+export function getValidation<T>(founderId: string): T | undefined {
+  return getStore().validations.get(founderId) as T | undefined;
+}
+
+export function saveValidation(founderId: string, report: unknown): void {
+  getStore().validations.set(founderId, report);
 }
 
 export function getThesis(): ThesisConfig {

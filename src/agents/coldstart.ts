@@ -22,10 +22,9 @@ function safeHost(url: string): string {
   }
 }
 
-export async function fetchFootprint(
-  name: string,
-  context: string
-): Promise<FootprintSignal[] | null> {
+// Generic Tavily search, same fail-soft contract — also used by the
+// validator agent for independent cross-checks.
+export async function tavilySearch(query: string): Promise<FootprintSignal[] | null> {
   const key = process.env.TAVILY_API_KEY;
   if (!key) return null;
   try {
@@ -38,7 +37,7 @@ export async function fetchFootprint(
       },
       body: JSON.stringify({
         api_key: key,
-        query: `"${name}" ${context}`,
+        query,
         search_depth: "basic",
         max_results: 5,
       }),
@@ -64,4 +63,11 @@ export async function fetchFootprint(
   } catch {
     return null; // timeout / DNS / network — fail soft
   }
+}
+
+export async function fetchFootprint(
+  name: string,
+  context: string
+): Promise<FootprintSignal[] | null> {
+  return tavilySearch(`"${name}" ${context}`);
 }
