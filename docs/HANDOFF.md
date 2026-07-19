@@ -89,7 +89,7 @@ Ownership during the build: **Builder Alpha** owned `src/agents`, `src/lib`, `sr
 
 **Self-correction loop — shipped.** Validator agent as above: independent evidence, downgrade-only adjudication, wrong-entity guard, honest "Not independently validated" badge when checks are unavailable, original-vs-revised deltas in the audit trail.
 
-**Sourcing & network intelligence — shipped (backend full, UI in progress).** Per-founder provenance chains ("GitHub topic: llm-inference → repo: ray-project/ray"), plus the full network model of §6: graph of channels/programs/institutions/people, shrinkage-adjusted channel quality, multi-touch outcome attribution, and underexplored-channel suggestions — all live behind `/api/sourcing`, `/api/sourcing/graph`, and `/api/outcome`. The dedicated workspace UI is the remaining piece.
+**Sourcing & network intelligence — shipped end-to-end.** Per-founder provenance chains ("GitHub topic: llm-inference → repo: ray-project/ray"), plus the full network model of §6: graph of channels/programs/institutions/people, shrinkage-adjusted channel quality, multi-touch outcome attribution, and underexplored-channel suggestions — all live behind `/api/sourcing`, `/api/sourcing/graph`, and `/api/outcome`. The dedicated workspace UI is the remaining piece.
 
 ## 6. Sourcing & Network Intelligence — full model (backend shipped)
 
@@ -111,7 +111,7 @@ flowchart LR
 - **Exploration scoring (live):** adjacent-node evidence × low current coverage × small-sample bonus, via an explainable static similarity map — producing exactly the target suggestion: *"ETH AI Center: 0 founders sourced, but adjacent nodes DeepMind and KubeCon EU produced funded deals — run a targeted scan."* Sibling GitHub topics of proven scrape channels carry a `scanHint` that plugs directly into `/api/discover`; one scannable suggestion is always surfaced.
 - **Honest limitation:** the in-memory architecture learns within a session. Production requires an append-only event store to learn across deployments — a deliberate hackathon trade (deploy risk was the #1 historical failure mode), with a clean seam: `OutcomeEvent` is already append-only in shape.
 
-Remaining: the sourcing workspace UI (channel table, suggestions panel with "Scan this channel", "Mark funded" action) — contract frozen, in progress.
+The sourcing workspace UI is live at `/sourcing`: channel table with shrinkage caveats, suggestions panel with "Scan this channel", and outcome actions that reorder rankings in place. Next milestone: full visual adoption of the Protegis design language (`design/VC-Brain.dc.html`) — reveal dock + header first, the rest post-hackathon.
 
 ## 7. Resilience inventory
 
