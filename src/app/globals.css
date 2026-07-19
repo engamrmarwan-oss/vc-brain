@@ -24,3 +24,128 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@keyframes vcMarkPop {
+  0% { opacity: 0; transform: scale(.4) rotate(-12deg); }
+  55% { opacity: 1; transform: scale(1.12) rotate(3deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+
+@keyframes vcRingDraw {
+  from { stroke-dashoffset: 126; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes vcDotPop {
+  0% { opacity: 0; transform: scale(0); }
+  60% { opacity: 0; transform: scale(0); }
+  78% { opacity: 1; transform: scale(1.5); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes vcWordIn {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes vcFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes vcPulseRing {
+  0% { opacity: .55; transform: scale(.5); }
+  80% { opacity: 0; }
+  100% { opacity: 0; transform: scale(2.4); }
+}
+
+@keyframes vcWipeUp {
+  0%, 62% { transform: translateY(0); }
+  100% { transform: translateY(-102%); }
+}
+
+@keyframes vcIdleDot {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.28); }
+}
+
+.vc-header-button,
+.vc-header-tab {
+  transition: background .16s ease, color .16s ease, border-color .16s ease,
+    transform .12s ease;
+}
+
+.vc-header-button:active,
+.vc-header-tab:active {
+  transform: translateY(1px);
+}
+
+.vc-header-mark {
+  transition: transform .25s ease;
+}
+
+.vc-header-mark:hover {
+  transform: translateY(-1px) scale(1.04);
+}
+
+.vc-header-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: vcIdleDot 3.4s ease-in-out infinite;
+}
+
+.vc-header-mark:hover .vc-header-ring {
+  animation: vcRingDraw .7s ease forwards;
+}
+
+.vc-reveal-overlay {
+  animation: vcWipeUp 2500ms cubic-bezier(.7, 0, .3, 1) forwards;
+}
+
+.vc-reveal-mark {
+  transform-origin: center;
+  animation: vcMarkPop .85s cubic-bezier(.34, 1.4, .5, 1) forwards;
+}
+
+.vc-reveal-ring {
+  animation: vcRingDraw .9s ease .35s both;
+}
+
+.vc-reveal-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: vcDotPop 1.3s ease both;
+}
+
+.vc-reveal-word {
+  animation: vcWordIn .5s ease .7s both;
+}
+
+.vc-reveal-subtitle {
+  animation: vcFade .6s ease 1.15s both;
+}
+
+.vc-reveal-pulse {
+  animation: vcPulseRing 2.1s ease-out infinite;
+}
+
+.vc-reveal-pulse-delay-1 {
+  animation-delay: .7s;
+}
+
+.vc-reveal-pulse-delay-2 {
+  animation-delay: 1.4s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vc-reveal-overlay {
+    display: none !important;
+  }
+
+  .vc-reveal-overlay,
+  .vc-reveal-overlay *,
+  .vc-header-dot,
+  .vc-header-mark:hover .vc-header-ring {
+    animation: none !important;
+  }
+}

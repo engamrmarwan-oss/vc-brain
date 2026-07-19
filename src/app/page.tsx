@@ -10,10 +10,22 @@ export const metadata: Metadata = {
   description: "Ranked, evidence-backed founder screening pipeline.",
 };
 
-export default function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ panel?: string; q?: string }>;
+}) {
+  const { panel, q } = await searchParams;
   const founders = allFounders().sort(
     (a, b) => b.founderScore - a.founderScore,
   );
 
-  return <FounderPipeline founders={founders} />;
+  return (
+    <FounderPipeline
+      founders={founders}
+      initialQuery={q ?? ""}
+      initialThesisOpen={panel === "thesis"}
+      key={`${q ?? ""}:${panel ?? ""}`}
+    />
+  );
 }
