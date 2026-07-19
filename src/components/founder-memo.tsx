@@ -11,10 +11,12 @@ import {
 
 import { AppHeader } from "@/components/app-header";
 import {
+  deckSummaryFromUnknown,
   EMPTY_APPLICATIONS_SNAPSHOT,
   getApplicationsSnapshot,
   parseApplicationsSnapshot,
   subscribeToApplications,
+  type DeckSummary,
 } from "@/components/founder-application-storage";
 import type {
   Assessment,
@@ -166,6 +168,24 @@ async function requestAssessment(founderId: string): Promise<Assessment> {
   return (await response.json()) as Assessment;
 }
 
+async function requestDeckSummary(founderId: string): Promise<DeckSummary> {
+  const response = await fetch(`/api/deck?id=${encodeURIComponent(founderId)}`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) throw new Error("Deck summary unavailable");
+
+  const payload = (await response.json()) as unknown;
+  if (!payload || typeof payload !== "object" || !("summary" in payload)) {
+    throw new Error("Deck summary response invalid");
+  }
+
+  const summary = deckSummaryFromUnknown(payload.summary);
+  if (!summary) throw new Error("Deck summary response invalid");
+
+  return summary;
+}
+
 export function FounderMemo({ founderId }: { founderId: string }) {
   const applicationsSnapshot = useSyncExternalStore(
     subscribeToApplications,
@@ -184,6 +204,10 @@ export function FounderMemo({ founderId }: { founderId: string }) {
   );
   const [isLoading, setIsLoading] = useState(true);
   const [usingFallback, setUsingFallback] = useState(false);
+  const [deckSummary, setDeckSummary] = useState<DeckSummary | undefined>(
+    storedApplication?.deckSummary,
+  );
+  const [isDeckLoading, setIsDeckLoading] = useState(true);
 
   const loadAssessment = useCallback(async () => {
     setIsLoading(true);
@@ -215,6 +239,25 @@ export function FounderMemo({ founderId }: { founderId: string }) {
       })
       .finally(() => {
         if (active) setIsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [founderId, storedApplication]);
+
+  useEffect(() => {
+    let active = true;
+
+    requestDeckSummary(founderId)
+      .then((summary) => {
+        if (active) setDeckSummary(summary);
+      })
+      .catch(() => {
+        if (active) setDeckSummary(storedApplication?.deckSummary);
+      })
+      .finally(() => {
+        if (active) setIsDeckLoading(false);
       });
 
     return () => {
@@ -329,6 +372,11 @@ export function FounderMemo({ founderId }: { founderId: string }) {
           </div>
         </section>
 
+        <DeckSummaryCard
+          isLoading={isDeckLoading}
+          summary={deckSummary}
+        />
+
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.7fr)_minmax(300px,0.74fr)]">
           <section
             aria-labelledby="trust-score"
@@ -422,6 +470,187 @@ function profileFromFounder(
     geo: founder.geo,
     entry: "Inbound",
   };
+}
+
+function DeckSummaryCard({
+  isLoading,
+  summary,
+}: {
+  isLoading: boolean;
+  summary?: DeckSummary;
+}) {
+  return (
+    <section
+      aria-labelledby="deck-summary"
+      className="mb-5 overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#f9f8f5] shadow-[0_12px_32px_rgba(40,42,36,0.05)]"
+    >
+      <div className="flex flex-col justify-between gap-4 border-b border-[#dfddd6] px-5 py-5 sm:flex-row sm:items-center sm:px-6">
+        <div>
+          <div className="mb-1.5 flex items-center gap-2.5">
+            <span className="grid size-7 place-items-center rounded-lg bg-[#e8ece4] text-[#536c5d]">
+              <DeckIcon />
+            </span>
+            <h2
+              className="text-[17px] font-semibold tracking-[-0.025em]"
+              id="deck-summary"
+            >
+              Deck executive summary
+            </h2>
+          </div>
+          <p className="text-[11px] text-[#81837b]">
+            What the deck says first. Claim verification follows immediately below.
+          </p>
+        </div>
+        <span
+          className={`inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[8.5px] font-bold uppercase tracking-[0.09em] ${
+            isLoading
+              ? "bg-[#eeeae0] text-[#8b7750]"
+              : summary
+                ? "bg-[#e5eee7] text-[#42775b]"
+                : "bg-[#eceae4] text-[#7e8078]"
+          }`}
+        >
+          <span
+            className={`size-1.5 rounded-full ${
+              isLoading
+                ? "animate-pulse bg-[#c79f58]"
+                : summary
+                  ? "bg-[#58a17a]"
+                  : "bg-[#aaa89f]"
+            }`}
+          />
+          {isLoading ? "Extracting" : summary ? "PDF extracted" : "No extraction"}
+        </span>
+      </div>
+
+      {isLoading && !summary ? (
+        <div className="grid gap-5 p-5 sm:p-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <DeckSummarySkeleton />
+          <DeckSummarySkeleton compact />
+        </div>
+      ) : summary ? (
+        <div className="grid lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+          <div className="border-b border-[#e2e0d9] p-5 sm:p-6 lg:border-b-0 lg:border-r">
+            <DeckSummaryField label="Company snapshot">
+              <p className="text-[13px] font-medium leading-[1.7] text-[#34362f]">
+                {summary.snapshot || "The deck did not provide a clear company snapshot."}
+              </p>
+            </DeckSummaryField>
+
+            <DeckSummaryField label="Market / wedge">
+              <p className="text-[11px] leading-[1.65] text-[#70726a]">
+                {summary.market || "No explicit market statement was extracted."}
+              </p>
+            </DeckSummaryField>
+
+            {summary.statedMetrics.length > 0 && (
+              <DeckSummaryField label="Stated metrics" last>
+                <div className="flex flex-wrap gap-2">
+                  {summary.statedMetrics.map((metric) => (
+                    <span
+                      className="rounded-lg bg-[#eceae3] px-2.5 py-1.5 text-[9.5px] font-semibold text-[#53564e] ring-1 ring-inset ring-[#dfdcd3]"
+                      key={metric}
+                    >
+                      {metric}
+                    </span>
+                  ))}
+                </div>
+              </DeckSummaryField>
+            )}
+          </div>
+
+          <div className="p-5 sm:p-6">
+            <DeckSummaryField label={`Extracted claims · ${summary.claims.length}`}>
+              {summary.claims.length > 0 ? (
+                <ol className="space-y-2.5">
+                  {summary.claims.map((claim, index) => (
+                    <li
+                      className="grid grid-cols-[22px_1fr] gap-2.5 text-[10.5px] leading-[1.5] text-[#555750]"
+                      key={`${claim}-${index}`}
+                    >
+                      <span className="grid size-[22px] place-items-center rounded-full bg-[#e8eee8] text-[8px] font-bold tabular-nums text-[#4d755e]">
+                        {String(index + 1).padStart(2, "0")}
+                      </span>
+                      <span>{claim}</span>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="text-[10.5px] text-[#85877f]">
+                  No checkable claims were extracted.
+                </p>
+              )}
+            </DeckSummaryField>
+
+            <DeckSummaryField label="Traction signals" last>
+              {summary.tractionSignals.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {summary.tractionSignals.map((signal) => (
+                    <span
+                      className="rounded-full bg-[#f0eee8] px-2.5 py-1.5 text-[9px] font-medium text-[#666860]"
+                      key={signal}
+                    >
+                      {signal}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[10.5px] text-[#85877f]">
+                  No qualitative traction signals were extracted.
+                </p>
+              )}
+            </DeckSummaryField>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3 px-5 py-6 sm:px-6">
+          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#eceae3] text-[#85877f]">
+            <DeckIcon />
+          </span>
+          <div>
+            <p className="text-[12px] font-semibold text-[#42443e]">
+              No extracted deck summary for this founder
+            </p>
+            <p className="mt-1 text-[10.5px] leading-relaxed text-[#85877f]">
+              The Trust Score below still uses submitted claims and public evidence.
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DeckSummaryField({
+  children,
+  label,
+  last = false,
+}: {
+  children: React.ReactNode;
+  label: string;
+  last?: boolean;
+}) {
+  return (
+    <div className={last ? "" : "mb-5 border-b border-[#e7e5de] pb-5"}>
+      <p className="mb-2.5 text-[8.5px] font-bold uppercase tracking-[0.13em] text-[#8b8d85]">
+        {label}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+function DeckSummarySkeleton({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="animate-pulse">
+      <div className="mb-4 h-2 w-24 rounded-full bg-[#e0ded6]" />
+      <div className="space-y-2.5">
+        <div className="h-3 w-full rounded-full bg-[#e8e6df]" />
+        <div className="h-3 w-[92%] rounded-full bg-[#e8e6df]" />
+        {!compact && <div className="h-3 w-[72%] rounded-full bg-[#e8e6df]" />}
+      </div>
+    </div>
+  );
 }
 
 function AxisCard({ axis, label }: { axis: Axis; label: string }) {
@@ -680,6 +909,9 @@ function RefreshIcon({ spinning }: { spinning: boolean }) {
 }
 function DotsIcon() {
   return <svg aria-hidden="true" fill="currentColor" height="14" viewBox="0 0 14 14" width="14"><circle cx="2.5" cy="7" r="1"/><circle cx="7" cy="7" r="1"/><circle cx="11.5" cy="7" r="1"/></svg>;
+}
+function DeckIcon() {
+  return <svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="M3.5 1.8h6l3 3v9.4h-9V1.8Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2"/><path d="M9.5 1.8v3h3M5.7 7.3h4.6M5.7 9.5h4.6M5.7 11.7h2.7" stroke="currentColor" strokeLinecap="round" strokeWidth="1.1"/></svg>;
 }
 function ShieldIcon() {
   return <span className="grid size-7 place-items-center rounded-lg bg-[#e5eee7] text-[#42775c]"><svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="M8 1.7 13 3.6v3.8c0 3.1-2 5.8-5 6.9-3-1.1-5-3.8-5-6.9V3.6L8 1.7Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4"/><path d="m5.6 7.8 1.5 1.5 3.4-3.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg></span>;

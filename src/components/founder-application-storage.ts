@@ -1,8 +1,17 @@
 import type { Assessment, Founder } from "@/lib/types";
 
+export type DeckSummary = {
+  snapshot: string;
+  claims: string[];
+  market: string;
+  tractionSignals: string[];
+  statedMetrics: string[];
+};
+
 export type StoredApplication = {
   founder: Founder;
   assessment?: Assessment;
+  deckSummary?: DeckSummary;
   submittedAt: string;
   status: "local-pending" | "scored";
 };
@@ -54,6 +63,23 @@ export function saveApplication(application: StoredApplication): void {
   window.dispatchEvent(new Event(APPLICATIONS_CHANGED_EVENT));
 }
 
+export function deckSummaryFromUnknown(value: unknown): DeckSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const summary = value as Partial<DeckSummary>;
+
+  if (
+    typeof summary.snapshot !== "string" ||
+    typeof summary.market !== "string" ||
+    !isStringArray(summary.claims) ||
+    !isStringArray(summary.tractionSignals) ||
+    !isStringArray(summary.statedMetrics)
+  ) {
+    return undefined;
+  }
+
+  return summary as DeckSummary;
+}
+
 function isStoredApplication(value: unknown): value is StoredApplication {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<StoredApplication>;
@@ -65,7 +91,13 @@ function isStoredApplication(value: unknown): value is StoredApplication {
       typeof founder.name === "string" &&
       typeof founder.company === "string" &&
       typeof founder.founderScore === "number" &&
+      (item.deckSummary === undefined ||
+        deckSummaryFromUnknown(item.deckSummary) !== undefined) &&
       (item.status === "local-pending" || item.status === "scored") &&
       typeof item.submittedAt === "string",
   );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }

@@ -5,7 +5,9 @@ import { FormEvent, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/app-header";
 import {
+  deckSummaryFromUnknown,
   saveApplication,
+  type DeckSummary,
   type StoredApplication,
 } from "@/components/founder-application-storage";
 import type { Assessment, Founder } from "@/lib/types";
@@ -50,6 +52,16 @@ export function FounderApplyForm() {
 
   function selectDeck(file: File | undefined) {
     if (!file) return;
+    const isPdf =
+      file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+    if (!isPdf) {
+      setDeck(null);
+      setErrorMessage("Please upload the pitch deck as a PDF.");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+
     setDeck(file);
     setErrorMessage("");
   }
@@ -165,7 +177,7 @@ export function FounderApplyForm() {
                 label="Pitch deck"
                 number="02"
                 required
-                support="PDF, PPT, or PPTX · up to 25 MB."
+                support="PDF · up to 25 MB."
               >
                 <div
                   className={`relative rounded-2xl border border-dashed p-5 transition-colors ${
@@ -191,7 +203,7 @@ export function FounderApplyForm() {
                   }}
                 >
                   <input
-                    accept=".pdf,.ppt,.pptx,application/pdf,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    accept=".pdf,application/pdf"
                     className="sr-only"
                     id="pitch-deck"
                     name="pitchDeck"
@@ -315,25 +327,27 @@ async function submitApplication({
   const localFounder = createLocalFounder(companyName, deck, githubUrl);
 
   try {
+    const formData = new FormData();
+    formData.append("companyName", companyName);
+    formData.append("pitchDeck", deck, deck.name);
+    if (githubUrl) formData.append("githubUrl", githubUrl);
+
     const response = await fetch("/api/apply", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        companyName,
-        deckName: deck.name,
-        githubUrl: githubUrl || undefined,
-      }),
+      body: formData,
     });
 
     if (!response.ok) throw new Error("Apply endpoint unavailable");
 
     const payload = (await response.json()) as unknown;
     const founder = founderFromPayload(payload) ?? localFounder;
+    const deckSummary = deckSummaryFromApplyPayload(payload);
     const assessment = await scoreFounder(founder.id);
 
     return {
       founder,
       assessment,
+      deckSummary,
       submittedAt,
       status: assessment ? "scored" : "local-pending",
     };
@@ -344,6 +358,19 @@ async function submitApplication({
       status: "local-pending",
     };
   }
+}
+
+function deckSummaryFromApplyPayload(payload: unknown): DeckSummary | undefined {
+  if (!payload || typeof payload !== "object" || !("deck" in payload)) {
+    return undefined;
+  }
+
+  const deckPayload = payload.deck;
+  if (!deckPayload || typeof deckPayload !== "object" || !("summary" in deckPayload)) {
+    return undefined;
+  }
+
+  return deckSummaryFromUnknown(deckPayload.summary);
 }
 
 async function scoreFounder(id: string): Promise<Assessment | undefined> {

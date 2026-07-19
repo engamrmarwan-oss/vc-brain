@@ -3,6 +3,7 @@
 // The Founder Score "never resets" requirement is satisfied within the demo
 // session — which is all a judge ever sees. Zero Prisma/Neon deploy risk.
 
+import type { DeckSummary } from "@/agents/deck";
 import { FOUNDERS } from "@/data/seed";
 import { DEFAULT_THESIS, type ThesisConfig } from "@/lib/thesis";
 import type { Assessment, Founder } from "@/lib/types";
@@ -10,6 +11,7 @@ import type { Assessment, Founder } from "@/lib/types";
 type Store = {
   founders: Map<string, Founder>;
   assessments: Map<string, Assessment>; // session cache: list/memo consistency
+  deckSummaries: Map<string, DeckSummary>; // per-founder extracted exec summary
   thesis: ThesisConfig;
   seeded: boolean;
 };
@@ -22,6 +24,7 @@ function getStore(): Store {
     g.__vcbrain = {
       founders: new Map(),
       assessments: new Map(),
+      deckSummaries: new Map(),
       thesis: DEFAULT_THESIS,
       seeded: false,
     };
@@ -55,6 +58,14 @@ export function getAssessment(founderId: string): Assessment | undefined {
 
 export function saveAssessment(a: Assessment): void {
   getStore().assessments.set(a.founderId, a);
+}
+
+export function getDeckSummary(founderId: string): DeckSummary | undefined {
+  return getStore().deckSummaries.get(founderId);
+}
+
+export function saveDeckSummary(founderId: string, s: DeckSummary): void {
+  getStore().deckSummaries.set(founderId, s);
 }
 
 export function getThesis(): ThesisConfig {
