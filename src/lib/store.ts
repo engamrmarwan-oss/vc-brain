@@ -5,6 +5,8 @@
 
 import type { DeckSummary, ResumeSummary } from "@/agents/deck";
 import { FOUNDERS } from "@/data/seed";
+import { SEED_EDGES, SEED_OUTCOMES } from "@/data/sourcing-seed";
+import type { OutcomeEvent, SourceEdge } from "@/lib/sourcing-graph";
 import { DEFAULT_THESIS, type ThesisConfig } from "@/lib/thesis";
 import type { TraceReport } from "@/lib/trace";
 import type { Assessment, Founder } from "@/lib/types";
@@ -27,6 +29,8 @@ type Store = {
   documents: Map<string, Partial<Record<DocumentType, StoredDocument>>>;
   traces: Map<string, TraceReport>; // audit trail of the latest scoring run
   validations: Map<string, unknown>; // last ValidationReport per founder
+  sourceEdges: SourceEdge[]; // seeded network edges (dynamic ones derived at read)
+  outcomeEvents: OutcomeEvent[]; // append-only outcome log — the feedback loop
   thesis: ThesisConfig;
   seeded: boolean;
 };
@@ -44,6 +48,8 @@ function getStore(): Store {
       documents: new Map(),
       traces: new Map(),
       validations: new Map(),
+      sourceEdges: [...SEED_EDGES],
+      outcomeEvents: [...SEED_OUTCOMES],
       thesis: DEFAULT_THESIS,
       seeded: false,
     };
@@ -59,6 +65,8 @@ function getStore(): Store {
   s.documents ??= new Map();
   s.traces ??= new Map();
   s.validations ??= new Map();
+  s.sourceEdges ??= [...SEED_EDGES];
+  s.outcomeEvents ??= [...SEED_OUTCOMES];
   s.thesis ??= DEFAULT_THESIS;
   if (!s.seeded) {
     for (const f of FOUNDERS) s.founders.set(f.id, f);
@@ -138,6 +146,15 @@ export function getValidation<T>(founderId: string): T | undefined {
 
 export function saveValidation(founderId: string, report: unknown): void {
   getStore().validations.set(founderId, report);
+}
+
+export function getSourcingSeedData(): { edges: SourceEdge[]; outcomes: OutcomeEvent[] } {
+  const s = getStore();
+  return { edges: s.sourceEdges, outcomes: s.outcomeEvents };
+}
+
+export function addOutcomeEvent(e: OutcomeEvent): void {
+  getStore().outcomeEvents.push(e);
 }
 
 export function getThesis(): ThesisConfig {
