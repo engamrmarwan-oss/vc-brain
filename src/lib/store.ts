@@ -4,10 +4,13 @@
 // session — which is all a judge ever sees. Zero Prisma/Neon deploy risk.
 
 import { FOUNDERS } from "@/data/seed";
-import type { Founder } from "@/lib/types";
+import { DEFAULT_THESIS, type ThesisConfig } from "@/lib/thesis";
+import type { Assessment, Founder } from "@/lib/types";
 
 type Store = {
   founders: Map<string, Founder>;
+  assessments: Map<string, Assessment>; // session cache: list/memo consistency
+  thesis: ThesisConfig;
   seeded: boolean;
 };
 
@@ -16,7 +19,12 @@ const g = globalThis as unknown as { __vcbrain?: Store };
 
 function getStore(): Store {
   if (!g.__vcbrain) {
-    g.__vcbrain = { founders: new Map(), seeded: false };
+    g.__vcbrain = {
+      founders: new Map(),
+      assessments: new Map(),
+      thesis: DEFAULT_THESIS,
+      seeded: false,
+    };
   }
   const s = g.__vcbrain;
   if (!s.seeded) {
@@ -35,5 +43,24 @@ export function getFounder(id: string): Founder | undefined {
 }
 
 export function upsertFounder(f: Founder): void {
-  getStore().founders.set(f.id, f);
+  const s = getStore();
+  s.founders.set(f.id, f);
+  // Profile changed — any cached assessment is stale.
+  s.assessments.delete(f.id);
+}
+
+export function getAssessment(founderId: string): Assessment | undefined {
+  return getStore().assessments.get(founderId);
+}
+
+export function saveAssessment(a: Assessment): void {
+  getStore().assessments.set(a.founderId, a);
+}
+
+export function getThesis(): ThesisConfig {
+  return getStore().thesis;
+}
+
+export function setThesis(t: ThesisConfig): void {
+  getStore().thesis = t;
 }

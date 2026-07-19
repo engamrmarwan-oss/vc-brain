@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  useTransition,
+} from "react";
 
 import { AppHeader } from "@/components/app-header";
 import {
@@ -10,6 +17,13 @@ import {
   parseApplicationsSnapshot,
   subscribeToApplications,
 } from "@/components/founder-application-storage";
+import {
+  DEFAULT_THESIS,
+  GEOGRAPHY_LABELS,
+  SECTOR_LABELS,
+  ThesisControls,
+  type ThesisState,
+} from "@/components/thesis-controls";
 import type {
   Assessment,
   AxisVerdict,
@@ -27,6 +41,22 @@ type FounderSignals = {
   trust: "verified" | "contradicted" | "thin" | "pending";
   trustLabel: string;
 };
+type RankedApiEntry = {
+  founder: Founder;
+  assessment: Assessment;
+  fit: {
+    score: number;
+    outsideThesis: boolean;
+    reasons: string[];
+  };
+};
+type ApiThesis = {
+  sectors: string[];
+  geos: string[];
+  stage?: "pre-seed" | "seed" | "series-a";
+  riskAppetite: "conservative" | "balanced" | "aggressive";
+};
+type RankResponse = { ranked: RankedApiEntry[]; thesis: ApiThesis };
 
 const FOUNDER_SIGNALS: Record<string, FounderSignals> = {
   "priya-nair": {
@@ -77,6 +107,15 @@ const FILTERS: Array<{ label: string; value: EntryFilter }> = [
 export function FounderPipeline({ founders }: { founders: Founder[] }) {
   const [query, setQuery] = useState("");
   const [entryFilter, setEntryFilter] = useState<EntryFilter>("all");
+  const [thesis, setThesis] = useState<ThesisState>(DEFAULT_THESIS);
+  const [isThesisOpen, setIsThesisOpen] = useState(true);
+  const [isRefreshing, startRefresh] = useTransition();
+  const [rankedEntries, setRankedEntries] = useState<RankedApiEntry[] | null>(
+    null,
+  );
+  const [isInitialRankLoading, setIsInitialRankLoading] = useState(true);
+  const [rankError, setRankError] = useState("");
+  const rankRequestVersion = useRef(0);
   const applicationsSnapshot = useSyncExternalStore(
     subscribeToApplications,
     getApplicationsSnapshot,
@@ -109,11 +148,65 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
       ),
     [storedApplications],
   );
+  const rankedEntriesById = useMemo(
+    () =>
+      new Map(
+        (rankedEntries ?? []).map((entry) => [entry.founder.id, entry]),
+      ),
+    [rankedEntries],
+  );
+  const rankedFounders = useMemo(
+    () => {
+      if (rankedEntries) {
+        const ordered = rankedEntries.map((entry) => entry.founder);
+        const rankedIds = new Set(ordered.map((founder) => founder.id));
+        const localOnly = allFounders.filter(
+          (founder) => !rankedIds.has(founder.id),
+        );
+        return [...ordered, ...localOnly];
+      }
+
+      return [...allFounders].sort((a, b) => {
+        const aFit = evaluateThesis(a, thesis);
+        const bFit = evaluateThesis(b, thesis);
+
+        if (aFit.outsideThesis !== bFit.outsideThesis) {
+          return aFit.outsideThesis ? 1 : -1;
+        }
+
+        return b.founderScore - a.founderScore;
+      });
+    },
+    [allFounders, rankedEntries, thesis],
+  );
+
+  useEffect(() => {
+    let active = true;
+    const requestVersion = ++rankRequestVersion.current;
+
+    requestRank()
+      .then((result) => {
+        if (!active || requestVersion !== rankRequestVersion.current) return;
+        setThesis(thesisFromApi(result.thesis));
+        setRankedEntries(result.ranked);
+        setIsInitialRankLoading(false);
+      })
+      .catch(() => {
+        if (active && requestVersion === rankRequestVersion.current) {
+          setIsInitialRankLoading(false);
+          setRankError("Live thesis ranking is temporarily unavailable.");
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const filteredFounders = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
 
-    return allFounders.filter((founder) => {
+    return rankedFounders.filter((founder) => {
       const matchesEntry =
         entryFilter === "all" || founder.entry === entryFilter;
       const matchesQuery =
@@ -124,7 +217,7 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
 
       return matchesEntry && matchesQuery;
     });
-  }, [allFounders, entryFilter, query]);
+  }, [entryFilter, query, rankedFounders]);
 
   const outboundCount = allFounders.filter(
     (founder) => founder.entry === "outbound",
@@ -135,6 +228,30 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
   const coldStartCount = allFounders.filter(
     (founder) => founder.entry === "cold-start",
   ).length;
+  const inThesisCount = rankedFounders.filter((founder) => {
+    const apiFit = rankedEntriesById.get(founder.id)?.fit;
+    return apiFit
+      ? !apiFit.outsideThesis
+      : !evaluateThesis(founder, thesis).outsideThesis;
+  }).length;
+
+  function handleThesisChange(nextThesis: ThesisState) {
+    setThesis(nextThesis);
+    setIsInitialRankLoading(false);
+    setRankError("");
+    const requestVersion = ++rankRequestVersion.current;
+    startRefresh(async () => {
+      try {
+        const result = await requestRank(nextThesis);
+        if (requestVersion !== rankRequestVersion.current) return;
+        setRankedEntries(result.ranked);
+      } catch {
+        if (requestVersion !== rankRequestVersion.current) return;
+        setRankedEntries(null);
+        setRankError("Using local ordering — the live thesis engine did not respond.");
+      }
+    });
+  }
 
   return (
     <div className="min-h-screen bg-[#efeee9] text-[#171915]">
@@ -163,12 +280,15 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
           </div>
 
           <div className="flex items-center gap-2.5">
-            <Link
+            <button
+              aria-expanded={isThesisOpen}
+              aria-controls="thesis-engine"
               className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#d3d1c9] bg-[#f8f7f3] px-4 text-[12px] font-semibold transition-colors hover:bg-white"
-              href="/apply?mode=thesis"
+              onClick={() => setIsThesisOpen((open) => !open)}
+              type="button"
             >
-              <SlidersIcon /> Thesis settings
-            </Link>
+              <SlidersIcon /> {isThesisOpen ? "Hide thesis" : "Thesis settings"}
+            </button>
             <Link
               className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#20231e] px-4 text-[12px] font-semibold text-white shadow-[0_8px_20px_rgba(32,35,30,0.14)] transition-colors hover:bg-[#30342d]"
               href="/apply"
@@ -177,6 +297,26 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
             </Link>
           </div>
         </section>
+
+        {isThesisOpen && (
+          <>
+            <ThesisControls
+              inThesisCount={inThesisCount}
+              isRanking={isInitialRankLoading || isRefreshing}
+              onChange={handleThesisChange}
+              thesis={thesis}
+              totalCount={rankedFounders.length}
+            />
+            {rankError && (
+              <p
+                className="-mt-2 mb-5 rounded-xl bg-[#f3e9d9] px-4 py-3 text-[9.5px] font-semibold text-[#8b6532]"
+                role="status"
+              >
+                {rankError}
+              </p>
+            )}
+          </>
+        )}
 
         <section
           aria-label="Pipeline summary"
@@ -228,8 +368,8 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
                 </span>
               </div>
               <p className="mt-1.5 text-[10.5px] text-[#85877f]">
-                Founder Score drives rank. F / M / I are separate screening
-                verdicts with their own momentum.
+                Thesis fit sets order. Founder Score and F / M / I remain
+                separate signals with their own momentum.
               </p>
             </div>
 
@@ -285,19 +425,34 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
           <ol className="divide-y divide-[#e2e0d9]">
             {filteredFounders.map((founder) => {
               const rank =
-                allFounders.findIndex((item) => item.id === founder.id) + 1;
+                rankedFounders.findIndex((item) => item.id === founder.id) + 1;
               const storedAssessment =
                 storedApplicationsById.get(founder.id)?.assessment;
+              const apiEntry = rankedEntriesById.get(founder.id);
+              const thesisFit = apiEntry
+                ? {
+                    mismatchReasons: apiEntry.fit.reasons.filter(
+                      (reason) =>
+                        reason.includes("outside thesis") ||
+                        reason.includes("!= thesis"),
+                    ),
+                    outsideThesis: apiEntry.fit.outsideThesis,
+                  }
+                : evaluateThesis(founder, thesis);
               return (
                 <FounderRow
                   founder={founder}
                   key={founder.id}
+                  mismatchReasons={thesisFit.mismatchReasons}
+                  outsideThesis={thesisFit.outsideThesis}
                   rank={rank}
                   signals={
-                    FOUNDER_SIGNALS[founder.id] ??
-                    (storedAssessment
-                      ? signalsFromAssessment(storedAssessment)
-                      : DEFAULT_SIGNALS)
+                    apiEntry
+                      ? signalsFromAssessment(apiEntry.assessment)
+                      : FOUNDER_SIGNALS[founder.id] ??
+                        (storedAssessment
+                          ? signalsFromAssessment(storedAssessment)
+                          : DEFAULT_SIGNALS)
                   }
                 />
               );
@@ -331,6 +486,110 @@ export function FounderPipeline({ founders }: { founders: Founder[] }) {
       </main>
     </div>
   );
+}
+
+function evaluateThesis(
+  founder: Founder,
+  thesis: ThesisState,
+): { mismatchReasons: string[]; outsideThesis: boolean } {
+  const sector = founder.sector.toLowerCase();
+  const geo = founder.geo.toLowerCase();
+  const sectorMatches =
+    thesis.sector === "generalist" ||
+    (thesis.sector === "ai-infra" && sector.includes("ai infra")) ||
+    (thesis.sector === "fintech-infra" && sector.includes("fintech"));
+  const geographyMatches =
+    thesis.geography === "all" ||
+    (thesis.geography === "berlin" &&
+      (geo.includes("berlin") || geo.includes("germany"))) ||
+    (thesis.geography === "nordics" &&
+      ["oslo", "norway", "stockholm", "sweden", "helsinki", "finland", "copenhagen", "denmark"].some(
+        (location) => geo.includes(location),
+      )) ||
+    (thesis.geography === "uk" &&
+      (geo.includes("london") || geo.includes("united kingdom") || geo === "uk"));
+  const mismatchReasons: string[] = [];
+
+  if (!sectorMatches) mismatchReasons.push(SECTOR_LABELS[thesis.sector]);
+  if (!geographyMatches) {
+    mismatchReasons.push(GEOGRAPHY_LABELS[thesis.geography]);
+  }
+
+  return {
+    mismatchReasons,
+    outsideThesis: !sectorMatches,
+  };
+}
+
+async function requestRank(thesis?: ThesisState): Promise<RankResponse> {
+  const response = await fetch("/api/rank", {
+    ...(thesis
+      ? {
+          body: JSON.stringify({ thesis: thesisToApi(thesis) }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        }
+      : { method: "GET" }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Thesis ranking failed with ${response.status}`);
+  }
+
+  const result = (await response.json()) as RankResponse;
+  if (!Array.isArray(result.ranked) || !result.thesis) {
+    throw new Error("Thesis ranking returned an invalid response");
+  }
+
+  return result;
+}
+
+function thesisToApi(thesis: ThesisState): ApiThesis {
+  const sectors =
+    thesis.sector === "ai-infra"
+      ? ["AI infrastructure"]
+      : thesis.sector === "fintech-infra"
+        ? ["Fintech infrastructure"]
+        : [];
+  const geos =
+    thesis.geography === "berlin"
+      ? ["DACH"]
+      : thesis.geography === "nordics"
+        ? ["Nordics"]
+        : thesis.geography === "uk"
+          ? ["UK"]
+          : [];
+
+  return {
+    sectors,
+    geos,
+    stage: thesis.stage === "any" ? undefined : thesis.stage,
+    riskAppetite: thesis.riskAppetite,
+  };
+}
+
+function thesisFromApi(thesis: ApiThesis): ThesisState {
+  const sectors = thesis.sectors.join(" ").toLowerCase();
+  const geos = thesis.geos.join(" ").toLowerCase();
+
+  return {
+    sector: sectors.includes("fintech")
+      ? "fintech-infra"
+      : sectors.includes("ai")
+        ? "ai-infra"
+        : "generalist",
+    geography:
+      geos.includes("nord")
+        ? "nordics"
+        : geos.includes("dach") || geos.includes("berlin")
+          ? "berlin"
+          : geos.includes("uk") || geos.includes("united kingdom")
+            ? "uk"
+            : "all",
+    stage: thesis.stage ?? "any",
+    riskAppetite: thesis.riskAppetite,
+  };
 }
 
 function signalsFromAssessment(assessment: Assessment): FounderSignals {
@@ -404,10 +663,14 @@ function SummaryMetric({
 
 function FounderRow({
   founder,
+  mismatchReasons,
+  outsideThesis,
   rank,
   signals,
 }: {
   founder: Founder;
+  mismatchReasons: string[];
+  outsideThesis: boolean;
   rank: number;
   signals: FounderSignals;
 }) {
@@ -469,6 +732,14 @@ function FounderRow({
               {rank === 1 && founder.entry === "outbound" && (
                 <span className="rounded-full bg-[#e5efe7] px-2 py-0.5 text-[8px] font-bold uppercase tracking-[0.1em] text-[#44765c]">
                   surfaced
+                </span>
+              )}
+              {outsideThesis && (
+                <span
+                  className="rounded-full bg-[#f5e7df] px-2 py-0.5 text-[8px] font-bold uppercase tracking-[0.09em] text-[#a4533f]"
+                  title={`Mismatch: ${mismatchReasons.join(" · ")}`}
+                >
+                  outside thesis
                 </span>
               )}
             </div>
