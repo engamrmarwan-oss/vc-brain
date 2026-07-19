@@ -6,7 +6,7 @@
 import { fetchFootprint } from "@/agents/coldstart";
 import { fetchGitHubSignals } from "@/agents/github";
 import { callLLM } from "@/lib/llm";
-import { getDeckSummary } from "@/lib/store";
+import { getDeckSummary, getResumeSummary } from "@/lib/store";
 import type { Assessment, Axis, AxisVerdict, Claim, Founder, Trend } from "@/lib/types";
 
 // Signals a scout would gather before scoring — fed into the prompt so claim
@@ -131,6 +131,7 @@ function buildUserPrompt(f: Founder, signals: string[]): string {
   // solution. It is the founder's own narrative, not verified fact — claim
   // verification stays per-claim, and signals outrank the deck on conflict.
   const deck = getDeckSummary(f.id);
+  const resume = getResumeSummary(f.id);
   return [
     `Founder: ${f.name} — ${f.company} (${f.sector}, ${f.geo}, entry: ${f.entry})`,
     `Founder Score from memory: ${f.founderScore} (confidence ${f.founderScoreConfidence})`,
@@ -159,6 +160,21 @@ function buildUserPrompt(f: Founder, signals: string[]): string {
           `described solution against what this market rewards right now;`,
           `founder -> factor any stated team background. Reference specifics`,
           `from the deck in your rationales.`,
+        ]
+      : []),
+    ...(resume
+      ? [
+          ``,
+          `Founder background (machine-extracted from the submitted resume —`,
+          `self-reported career history; the background claims among the deck`,
+          `claims above are verified against gathered signals as usual):`,
+          `- ${resume.headline.slice(0, 200)}`,
+          ...(resume.roles.length ? [`- Roles: ${resume.roles.join("; ").slice(0, 400)}`] : []),
+          ...(resume.education.length
+            ? [`- Education: ${resume.education.join("; ").slice(0, 200)}`]
+            : []),
+          `Factor this into the FOUNDER axis only: experience relevance,`,
+          `seniority, domain depth. It does not move market or ideaVsMarket.`,
         ]
       : []),
     ...(isThinEvidence(f)

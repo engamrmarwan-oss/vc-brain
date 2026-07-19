@@ -15,8 +15,10 @@ import {
   EMPTY_APPLICATIONS_SNAPSHOT,
   getApplicationsSnapshot,
   parseApplicationsSnapshot,
+  resumeSummaryFromUnknown,
   subscribeToApplications,
   type DeckSummary,
+  type ResumeSummary,
 } from "@/components/founder-application-storage";
 import type {
   Assessment,
@@ -186,6 +188,28 @@ async function requestDeckSummary(founderId: string): Promise<DeckSummary> {
   return summary;
 }
 
+async function requestResumeSummary(founderId: string): Promise<ResumeSummary> {
+  const urls = [
+    `/api/resume?id=${encodeURIComponent(founderId)}`,
+    `/api/deck?id=${encodeURIComponent(founderId)}&type=resume`,
+  ];
+
+  for (const url of urls) {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) continue;
+
+    const payload = (await response.json()) as unknown;
+    if (!payload || typeof payload !== "object" || !("summary" in payload)) {
+      continue;
+    }
+
+    const summary = resumeSummaryFromUnknown(payload.summary);
+    if (summary) return summary;
+  }
+
+  throw new Error("Resume summary unavailable");
+}
+
 export function FounderMemo({ founderId }: { founderId: string }) {
   const applicationsSnapshot = useSyncExternalStore(
     subscribeToApplications,
@@ -208,6 +232,10 @@ export function FounderMemo({ founderId }: { founderId: string }) {
     storedApplication?.deckSummary,
   );
   const [isDeckLoading, setIsDeckLoading] = useState(true);
+  const [resumeSummary, setResumeSummary] = useState<ResumeSummary | undefined>(
+    storedApplication?.resumeSummary,
+  );
+  const [isResumeLoading, setIsResumeLoading] = useState(true);
 
   const loadAssessment = useCallback(async () => {
     setIsLoading(true);
@@ -239,6 +267,25 @@ export function FounderMemo({ founderId }: { founderId: string }) {
       })
       .finally(() => {
         if (active) setIsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [founderId, storedApplication]);
+
+  useEffect(() => {
+    let active = true;
+
+    requestResumeSummary(founderId)
+      .then((summary) => {
+        if (active) setResumeSummary(summary);
+      })
+      .catch(() => {
+        if (active) setResumeSummary(storedApplication?.resumeSummary);
+      })
+      .finally(() => {
+        if (active) setIsResumeLoading(false);
       });
 
     return () => {
@@ -372,9 +419,20 @@ export function FounderMemo({ founderId }: { founderId: string }) {
           </div>
         </section>
 
-        <DeckSummaryCard
-          isLoading={isDeckLoading}
-          summary={deckSummary}
+        <div className="mb-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1.45fr)_minmax(330px,0.55fr)]">
+          <DeckSummaryCard isLoading={isDeckLoading} summary={deckSummary} />
+          <ResumeSummaryCard
+            isLoading={isResumeLoading}
+            summary={resumeSummary}
+          />
+        </div>
+
+        <DocumentsCard
+          deckName={storedApplication?.documents?.deck}
+          founderId={founderId}
+          hasDeck={Boolean(deckSummary || storedApplication?.documents?.deck)}
+          hasResume={Boolean(resumeSummary || storedApplication?.documents?.resume)}
+          resumeName={storedApplication?.documents?.resume}
         />
 
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.7fr)_minmax(300px,0.74fr)]">
@@ -472,6 +530,231 @@ function profileFromFounder(
   };
 }
 
+function ResumeSummaryCard({
+  isLoading,
+  summary,
+}: {
+  isLoading: boolean;
+  summary?: ResumeSummary;
+}) {
+  return (
+    <section
+      aria-labelledby="resume-summary"
+      className="overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#f9f8f5] shadow-[0_12px_32px_rgba(40,42,36,0.05)]"
+    >
+      <div className="border-b border-[#dfddd6] px-5 py-5 sm:px-6">
+        <div className="mb-1.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-7 place-items-center rounded-lg bg-[#eee9df] text-[#75623d]">
+              <ResumeIcon />
+            </span>
+            <h2
+              className="text-[17px] font-semibold tracking-[-0.025em]"
+              id="resume-summary"
+            >
+              Resume executive summary
+            </h2>
+          </div>
+          <span
+            className={`size-2 rounded-full ${
+              isLoading
+                ? "animate-pulse bg-[#c79f58]"
+                : summary
+                  ? "bg-[#58a17a]"
+                  : "bg-[#aaa89f]"
+            }`}
+          />
+        </div>
+        <p className="text-[11px] leading-relaxed text-[#81837b]">
+          Career signal only. Contact details are excluded from the screen.
+        </p>
+      </div>
+
+      {isLoading && !summary ? (
+        <div className="space-y-6 p-5 sm:p-6">
+          <DeckSummarySkeleton />
+          <DeckSummarySkeleton compact />
+        </div>
+      ) : summary ? (
+        <div className="p-5 sm:p-6">
+          <DeckSummaryField label="Career snapshot">
+            <p className="text-[13px] font-medium leading-[1.65] text-[#34362f]">
+              {summary.headline || "No clear career headline was extracted."}
+            </p>
+          </DeckSummaryField>
+
+          <DeckSummaryField label={`Roles · ${summary.roles.length}`}>
+            {summary.roles.length ? (
+              <ul className="space-y-2.5">
+                {summary.roles.map((role) => (
+                  <li
+                    className="flex items-start gap-2.5 text-[10.5px] leading-[1.5] text-[#555750]"
+                    key={role}
+                  >
+                    <span className="mt-[5px] size-1.5 shrink-0 rounded-full bg-[#779483]" />
+                    {role}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-[10.5px] text-[#85877f]">No roles extracted.</p>
+            )}
+          </DeckSummaryField>
+
+          {summary.education.length > 0 && (
+            <DeckSummaryField label="Education">
+              <div className="space-y-2">
+                {summary.education.map((item) => (
+                  <p
+                    className="rounded-lg bg-[#eeece5] px-2.5 py-2 text-[9.5px] font-medium leading-relaxed text-[#5f625a]"
+                    key={item}
+                  >
+                    {item}
+                  </p>
+                ))}
+              </div>
+            </DeckSummaryField>
+          )}
+
+          <DeckSummaryField
+            label={`Background claims · ${summary.backgroundClaims.length}`}
+            last
+          >
+            {summary.backgroundClaims.length ? (
+              <div className="space-y-2">
+                {summary.backgroundClaims.map((claim) => (
+                  <div
+                    className="flex items-start gap-2 rounded-lg bg-[#e8f0e9] px-2.5 py-2 text-[9.5px] font-medium leading-relaxed text-[#476b56]"
+                    key={claim}
+                  >
+                    <ShieldMiniIcon />
+                    <span>{claim}</span>
+                  </div>
+                ))}
+                <p className="pt-1 text-[8.5px] font-bold uppercase tracking-[0.1em] text-[#7c8c80]">
+                  Sent to Trust Score for verification
+                </p>
+              </div>
+            ) : (
+              <p className="text-[10.5px] text-[#85877f]">
+                No checkable background claims were extracted.
+              </p>
+            )}
+          </DeckSummaryField>
+        </div>
+      ) : (
+        <div className="flex items-start gap-3 px-5 py-6 sm:px-6">
+          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#eceae3] text-[#85877f]">
+            <ResumeIcon />
+          </span>
+          <div>
+            <p className="text-[12px] font-semibold text-[#42443e]">
+              No resume attached
+            </p>
+            <p className="mt-1 text-[10.5px] leading-relaxed text-[#85877f]">
+              Optional by design—the screen continues with deck and public signals.
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DocumentsCard({
+  deckName,
+  founderId,
+  hasDeck,
+  hasResume,
+  resumeName,
+}: {
+  deckName?: string;
+  founderId: string;
+  hasDeck: boolean;
+  hasResume: boolean;
+  resumeName?: string;
+}) {
+  const documents = [
+    ...(hasDeck
+      ? [{ name: deckName || "Pitch deck.pdf", type: "deck" as const }]
+      : []),
+    ...(hasResume
+      ? [{ name: resumeName || "Resume.pdf", type: "resume" as const }]
+      : []),
+  ];
+
+  return (
+    <section
+      aria-labelledby="documents"
+      className="mb-5 overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#f9f8f5] shadow-[0_12px_32px_rgba(40,42,36,0.04)]"
+    >
+      <div className="flex flex-col justify-between gap-2 border-b border-[#dfddd6] px-5 py-4 sm:flex-row sm:items-center sm:px-6">
+        <div>
+          <h2
+            className="text-[13px] font-semibold tracking-[-0.015em]"
+            id="documents"
+          >
+            Documents
+          </h2>
+          <p className="mt-1 text-[9.5px] text-[#85877f]">
+            Original founder-provided files, unchanged.
+          </p>
+        </div>
+        <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-[#92948c]">
+          {documents.length} attached
+        </span>
+      </div>
+
+      {documents.length ? (
+        <div className="grid divide-y divide-[#e3e1da] sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          {documents.map((document) => {
+            const url = `/api/document?id=${encodeURIComponent(founderId)}&type=${document.type}`;
+            return (
+              <article
+                className="flex min-w-0 items-center gap-3 px-5 py-4 sm:px-6"
+                key={document.type}
+              >
+                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#eceae3] text-[#666a61]">
+                  {document.type === "deck" ? <DeckIcon /> : <ResumeIcon />}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[11px] font-semibold text-[#393b35]">
+                    {document.name}
+                  </p>
+                  <p className="mt-1 text-[8.5px] font-bold uppercase tracking-[0.1em] text-[#969890]">
+                    {document.type === "deck" ? "Pitch deck" : "Resume"}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <a
+                    className="rounded-lg border border-[#d8d5cc] px-2.5 py-1.5 text-[8.5px] font-bold text-[#62655d] transition-colors hover:bg-white hover:text-[#252721]"
+                    href={url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    View
+                  </a>
+                  <a
+                    className="rounded-lg bg-[#252821] px-2.5 py-1.5 text-[8.5px] font-bold text-white transition-colors hover:bg-[#353931]"
+                    download={document.name}
+                    href={url}
+                  >
+                    Download
+                  </a>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="px-5 py-4 text-[10.5px] text-[#85877f] sm:px-6">
+          No original files are stored for this founder.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function DeckSummaryCard({
   isLoading,
   summary,
@@ -482,7 +765,7 @@ function DeckSummaryCard({
   return (
     <section
       aria-labelledby="deck-summary"
-      className="mb-5 overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#f9f8f5] shadow-[0_12px_32px_rgba(40,42,36,0.05)]"
+      className="overflow-hidden rounded-[18px] border border-[#d8d6cf] bg-[#f9f8f5] shadow-[0_12px_32px_rgba(40,42,36,0.05)]"
     >
       <div className="flex flex-col justify-between gap-4 border-b border-[#dfddd6] px-5 py-5 sm:flex-row sm:items-center sm:px-6">
         <div>
@@ -912,6 +1195,12 @@ function DotsIcon() {
 }
 function DeckIcon() {
   return <svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="M3.5 1.8h6l3 3v9.4h-9V1.8Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2"/><path d="M9.5 1.8v3h3M5.7 7.3h4.6M5.7 9.5h4.6M5.7 11.7h2.7" stroke="currentColor" strokeLinecap="round" strokeWidth="1.1"/></svg>;
+}
+function ResumeIcon() {
+  return <svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="M3.3 1.8h6.2l3.2 3.1v9.3H3.3V1.8Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.2"/><circle cx="8" cy="6.7" r="1.5" stroke="currentColor" strokeWidth="1.1"/><path d="M5.5 11.4c.4-1.2 1.3-1.9 2.5-1.9s2.1.7 2.5 1.9M9.5 1.8v3.1h3.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.1"/></svg>;
+}
+function ShieldMiniIcon() {
+  return <svg aria-hidden="true" className="mt-0.5 shrink-0" fill="none" height="12" viewBox="0 0 16 16" width="12"><path d="M8 1.7 13 3.6v3.8c0 3.1-2 5.8-5 6.9-3-1.1-5-3.8-5-6.9V3.6L8 1.7Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4"/><path d="m5.6 7.8 1.5 1.5 3.4-3.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg>;
 }
 function ShieldIcon() {
   return <span className="grid size-7 place-items-center rounded-lg bg-[#e5eee7] text-[#42775c]"><svg aria-hidden="true" fill="none" height="14" viewBox="0 0 16 16" width="14"><path d="M8 1.7 13 3.6v3.8c0 3.1-2 5.8-5 6.9-3-1.1-5-3.8-5-6.9V3.6L8 1.7Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.4"/><path d="m5.6 7.8 1.5 1.5 3.4-3.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.4"/></svg></span>;

@@ -8,10 +8,24 @@ export type DeckSummary = {
   statedMetrics: string[];
 };
 
+export type ResumeSummary = {
+  headline: string;
+  roles: string[];
+  education: string[];
+  backgroundClaims: string[];
+};
+
+export type ApplicationDocuments = {
+  deck?: string;
+  resume?: string;
+};
+
 export type StoredApplication = {
   founder: Founder;
   assessment?: Assessment;
   deckSummary?: DeckSummary;
+  resumeSummary?: ResumeSummary;
+  documents?: ApplicationDocuments;
   submittedAt: string;
   status: "local-pending" | "scored";
 };
@@ -80,6 +94,31 @@ export function deckSummaryFromUnknown(value: unknown): DeckSummary | undefined 
   return summary as DeckSummary;
 }
 
+export function resumeSummaryFromUnknown(value: unknown): ResumeSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const summary = value as Partial<ResumeSummary>;
+
+  if (
+    typeof summary.headline !== "string" ||
+    !isStringArray(summary.roles) ||
+    !isStringArray(summary.education) ||
+    !isStringArray(summary.backgroundClaims)
+  ) {
+    return undefined;
+  }
+
+  return summary as ResumeSummary;
+}
+
+function isApplicationDocuments(value: unknown): value is ApplicationDocuments {
+  if (!value || typeof value !== "object") return false;
+  const documents = value as ApplicationDocuments;
+  return (
+    (documents.deck === undefined || typeof documents.deck === "string") &&
+    (documents.resume === undefined || typeof documents.resume === "string")
+  );
+}
+
 function isStoredApplication(value: unknown): value is StoredApplication {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<StoredApplication>;
@@ -93,6 +132,9 @@ function isStoredApplication(value: unknown): value is StoredApplication {
       typeof founder.founderScore === "number" &&
       (item.deckSummary === undefined ||
         deckSummaryFromUnknown(item.deckSummary) !== undefined) &&
+      (item.resumeSummary === undefined ||
+        resumeSummaryFromUnknown(item.resumeSummary) !== undefined) &&
+      (item.documents === undefined || isApplicationDocuments(item.documents)) &&
       (item.status === "local-pending" || item.status === "scored") &&
       typeof item.submittedAt === "string",
   );

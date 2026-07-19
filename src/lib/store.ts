@@ -3,15 +3,27 @@
 // The Founder Score "never resets" requirement is satisfied within the demo
 // session — which is all a judge ever sees. Zero Prisma/Neon deploy risk.
 
-import type { DeckSummary } from "@/agents/deck";
+import type { DeckSummary, ResumeSummary } from "@/agents/deck";
 import { FOUNDERS } from "@/data/seed";
 import { DEFAULT_THESIS, type ThesisConfig } from "@/lib/thesis";
 import type { Assessment, Founder } from "@/lib/types";
+
+export type DocumentType = "deck" | "resume";
+
+// Original uploaded file, base64 in memory — session-scoped like the rest
+// of the store (no DB by design), served back via /api/document.
+export interface StoredDocument {
+  data: string; // base64
+  contentType: string;
+  filename: string;
+}
 
 type Store = {
   founders: Map<string, Founder>;
   assessments: Map<string, Assessment>; // session cache: list/memo consistency
   deckSummaries: Map<string, DeckSummary>; // per-founder extracted exec summary
+  resumeSummaries: Map<string, ResumeSummary>; // per-founder career signal
+  documents: Map<string, Partial<Record<DocumentType, StoredDocument>>>;
   thesis: ThesisConfig;
   seeded: boolean;
 };
@@ -25,6 +37,8 @@ function getStore(): Store {
       founders: new Map(),
       assessments: new Map(),
       deckSummaries: new Map(),
+      resumeSummaries: new Map(),
+      documents: new Map(),
       thesis: DEFAULT_THESIS,
       seeded: false,
     };
@@ -66,6 +80,32 @@ export function getDeckSummary(founderId: string): DeckSummary | undefined {
 
 export function saveDeckSummary(founderId: string, s: DeckSummary): void {
   getStore().deckSummaries.set(founderId, s);
+}
+
+export function getResumeSummary(founderId: string): ResumeSummary | undefined {
+  return getStore().resumeSummaries.get(founderId);
+}
+
+export function saveResumeSummary(founderId: string, s: ResumeSummary): void {
+  getStore().resumeSummaries.set(founderId, s);
+}
+
+export function getDocument(
+  founderId: string,
+  type: DocumentType
+): StoredDocument | undefined {
+  return getStore().documents.get(founderId)?.[type];
+}
+
+export function saveDocument(
+  founderId: string,
+  type: DocumentType,
+  doc: StoredDocument
+): void {
+  const s = getStore();
+  const existing = s.documents.get(founderId) ?? {};
+  existing[type] = doc;
+  s.documents.set(founderId, existing);
 }
 
 export function getThesis(): ThesisConfig {

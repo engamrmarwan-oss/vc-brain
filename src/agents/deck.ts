@@ -65,7 +65,7 @@ function strArr(v: unknown, max: number): string[] {
 
 export async function summarizeDeck(deckText: string): Promise<DeckSummary | null> {
   try {
-    const raw = await callLLM({
+    const raw = await callWithRetry({
       system: SYSTEM,
       user: `Pitch deck text:\n\n${deckText.slice(0, MAX_DECK_CHARS)}`,
       tier: "reasoning",
@@ -86,6 +86,94 @@ export async function summarizeDeck(deckText: string): Promise<DeckSummary | nul
   } catch {
     return null; // LLM/parse failure — fail soft
   }
+}
+
+// ---------- resume extraction (same machinery, career-signal only) ----------
+
+// Founder background from an uploaded resume. Career signal ONLY — the
+// prompt excludes contact info / PII, and emails are stripped in code.
+export interface ResumeSummary {
+  headline: string;          // one-line career summary
+  roles: string[];           // "Research Engineer, DeepMind (2021-2024)"
+  education: string[];       // "MSc Computer Science, ETH Zurich (2019)"
+  backgroundClaims: string[]; // verifiable claims -> Trust Score, e.g. "ex-DeepMind 2021-2024"
+}
+
+export interface ResumeExtraction {
+  parsed: boolean;
+  source: "pdf" | "text" | "none";
+  summary: ResumeSummary | null;
+}
+
+const RESUME_SYSTEM = `You extract CAREER SIGNAL from a founder's resume for a
+VC screening engine. Respond with ONLY this JSON shape:
+{
+  "headline": "one line: seniority, domain, standout credential",
+  "roles": ["title, company (tenure)" — most recent first, max 6],
+  "education": ["degree, institution (year)" — max 3],
+  "backgroundClaims": ["verifiable background claims phrased for fact-checking,
+e.g. 'ex-DeepMind research engineer 2021-2024' — max 3, most consequential first"]
+}
+STRICT PRIVACY RULE: career signal only. NEVER include contact details (email,
+phone, address), date of birth, photos, marital status, or any personal
+identifier beyond name, roles, companies, tenure, and education. Extract what
+the resume SAYS — verification happens downstream. Do not invent.`;
+
+// Deterministic belt to the prompt's suspenders: no email survives into the
+// stored summary. (Phone/address exclusion is prompt-enforced — a regex wide
+// enough for phones would eat tenure ranges like "2021-2024".)
+const stripEmails = (s: string) => s.replace(/\S+@\S+\.\S+/g, "[redacted]");
+
+// One retry on transient LLM errors, same posture as the scoring engine —
+// a one-off provider blip shouldn't cost the demo its extraction.
+async function callWithRetry(opts: Parameters<typeof callLLM>[0]): Promise<string> {
+  return callLLM(opts).catch(async () => {
+    await new Promise((r) => setTimeout(r, 500));
+    return callLLM(opts);
+  });
+}
+
+export async function summarizeResume(resumeText: string): Promise<ResumeSummary | null> {
+  try {
+    const raw = await callWithRetry({
+      system: RESUME_SYSTEM,
+      user: `Resume text:\n\n${resumeText.slice(0, MAX_DECK_CHARS)}`,
+      tier: "reasoning",
+      json: true,
+    });
+    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+    const parsed = JSON.parse(cleaned);
+    const summary: ResumeSummary = {
+      headline: typeof parsed.headline === "string" ? stripEmails(parsed.headline) : "",
+      roles: strArr(parsed.roles, 6).map(stripEmails),
+      education: strArr(parsed.education, 3).map(stripEmails),
+      backgroundClaims: strArr(parsed.backgroundClaims, 3).map(stripEmails),
+    };
+    return summary.headline || summary.roles.length ? summary : null;
+  } catch {
+    return null; // LLM/parse failure — fail soft
+  }
+}
+
+export async function processResume(input: {
+  buffer?: Buffer;
+  text?: string;
+}): Promise<ResumeExtraction> {
+  let resumeText: string | null = null;
+  let source: ResumeExtraction["source"] = "none";
+
+  if (input.buffer?.length) {
+    resumeText = await extractDeckText(input.buffer);
+    if (resumeText) source = "pdf";
+  }
+  if (!resumeText && input.text?.trim()) {
+    resumeText = input.text.trim();
+    source = "text";
+  }
+  if (!resumeText) return { parsed: false, source: "none", summary: null };
+
+  const summary = await summarizeResume(resumeText);
+  return { parsed: summary !== null, source, summary };
 }
 
 // One entry point for the apply route: PDF bytes, pasted text, or nothing.

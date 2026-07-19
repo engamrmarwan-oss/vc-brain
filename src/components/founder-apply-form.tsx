@@ -6,8 +6,10 @@ import { FormEvent, useRef, useState } from "react";
 import { AppHeader } from "@/components/app-header";
 import {
   deckSummaryFromUnknown,
+  resumeSummaryFromUnknown,
   saveApplication,
   type DeckSummary,
+  type ResumeSummary,
   type StoredApplication,
 } from "@/components/founder-application-storage";
 import type { Assessment, Founder } from "@/lib/types";
@@ -17,9 +19,17 @@ type SubmitState = "idle" | "submitting" | "error";
 export function FounderApplyForm() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const resumeInputRef = useRef<HTMLInputElement>(null);
   const [companyName, setCompanyName] = useState("");
   const [githubUrl, setGithubUrl] = useState("");
+  const [linkedinUrl, setLinkedinUrl] = useState("");
+  const [whatBuilding, setWhatBuilding] = useState("");
+  const [traction, setTraction] = useState("");
+  const [stage, setStage] = useState("");
+  const [sector, setSector] = useState("");
+  const [location, setLocation] = useState("");
   const [deck, setDeck] = useState<File | null>(null);
+  const [resume, setResume] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [submitState, setSubmitState] = useState<SubmitState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
@@ -38,6 +48,13 @@ export function FounderApplyForm() {
         companyName: companyName.trim(),
         deck,
         githubUrl: githubUrl.trim(),
+        linkedinUrl: linkedinUrl.trim(),
+        whatBuilding: whatBuilding.trim(),
+        traction: traction.trim(),
+        stage,
+        sector: sector.trim(),
+        location: location.trim(),
+        resume,
       });
 
       saveApplication(result);
@@ -66,6 +83,22 @@ export function FounderApplyForm() {
     setErrorMessage("");
   }
 
+  function selectResume(file: File | undefined) {
+    if (!file) return;
+    const isPdf =
+      file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+
+    if (!isPdf) {
+      setResume(null);
+      setErrorMessage("Please upload the resume as a PDF.");
+      if (resumeInputRef.current) resumeInputRef.current.value = "";
+      return;
+    }
+
+    setResume(file);
+    setErrorMessage("");
+  }
+
   return (
     <div className="min-h-screen bg-[#efeee9] text-[#171915]">
       <AppHeader />
@@ -88,8 +121,8 @@ export function FounderApplyForm() {
               A focused application. Nothing more.
             </h1>
             <p className="mt-5 max-w-md text-[12px] leading-[1.75] text-[#aeb2aa]">
-              We ask only for the signal needed to begin. No warm introduction,
-              fundraising history, or ten-page form required.
+              Deck and name is all we need. Share more and the system verifies
+              more — you don&apos;t fill forms, it does the digging.
             </p>
 
             <div className="mt-10 hidden space-y-1 sm:block">
@@ -104,8 +137,8 @@ export function FounderApplyForm() {
                 number="02"
               />
               <MinimalStep
-                detail="One public signal, if available"
-                label="Link"
+                detail="Add context only when it helps"
+                label="Signals"
                 number="03"
                 optional
               />
@@ -145,6 +178,10 @@ export function FounderApplyForm() {
                 ~90 seconds
               </span>
             </div>
+            <p className="mt-4 max-w-xl text-[10.5px] leading-relaxed text-[#777971]">
+              Deck and name is all we need. Share more and the system verifies
+              more — you don&apos;t fill forms, it does the digging.
+            </p>
           </div>
 
           <form className="px-6 py-6 sm:px-8 sm:py-8" onSubmit={handleSubmit}>
@@ -276,6 +313,112 @@ export function FounderApplyForm() {
                   </span>
                 </div>
               </FieldGroup>
+
+              <section className="rounded-2xl border border-[#ddd9d0] bg-[#f2f0ea] p-4 sm:p-5">
+                <div className="mb-5 flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-[11px] font-semibold text-[#32342e]">
+                      Share more signals
+                    </p>
+                    <p className="mt-1 text-[9.5px] leading-relaxed text-[#85877f]">
+                      Everything below is optional. Each signal gives the system
+                      another fact to verify—not another form to judge.
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-white px-2 py-1 text-[7.5px] font-bold uppercase tracking-[0.1em] text-[#85877f] ring-1 ring-[#dedbd2]">
+                    Optional
+                  </span>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <CompactField
+                    id="what-building"
+                    label="What you’re building"
+                    onChange={setWhatBuilding}
+                    placeholder="Inference infrastructure for edge AI"
+                    value={whatBuilding}
+                  />
+                  <CompactField
+                    id="traction"
+                    label="Traction"
+                    onChange={setTraction}
+                    placeholder="12 design partners, $18k MRR"
+                    value={traction}
+                  />
+
+                  <label className="block" htmlFor="stage">
+                    <span className="mb-2 block text-[9px] font-bold uppercase tracking-[0.1em] text-[#777971]">
+                      Stage
+                    </span>
+                    <select
+                      className="h-11 w-full rounded-xl border border-[#d5d2c9] bg-white px-3.5 text-[11px] text-[#34362f] outline-none transition focus:border-[#7c8b7f] focus:ring-4 focus:ring-[#5f8b70]/10"
+                      id="stage"
+                      name="stage"
+                      onChange={(event) => setStage(event.target.value)}
+                      value={stage}
+                    >
+                      <option value="">Select stage</option>
+                      <option value="pre-seed">Pre-seed</option>
+                      <option value="seed">Seed</option>
+                      <option value="series-a">Series A</option>
+                      <option value="growth">Growth</option>
+                    </select>
+                  </label>
+                  <CompactField
+                    id="sector"
+                    label="Sector"
+                    onChange={setSector}
+                    placeholder="AI infrastructure"
+                    value={sector}
+                  />
+                  <CompactField
+                    id="location"
+                    label="Location"
+                    onChange={setLocation}
+                    placeholder="Berlin, Germany"
+                    value={location}
+                  />
+                  <CompactField
+                    id="linkedin-url"
+                    label="LinkedIn URL"
+                    onChange={setLinkedinUrl}
+                    placeholder="https://linkedin.com/in/you"
+                    type="url"
+                    value={linkedinUrl}
+                  />
+                </div>
+
+                <div className="mt-4 rounded-xl border border-[#d6d3ca] bg-white p-3.5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold text-[#3e4039]">
+                        Resume
+                      </p>
+                      <p className="mt-1 truncate text-[9px] text-[#8b8d85]">
+                        {resume
+                          ? `${resume.name} · ${formatFileSize(resume.size)}`
+                          : "PDF · career signal only · contact details excluded"}
+                      </p>
+                    </div>
+                    <input
+                      accept=".pdf,application/pdf"
+                      className="sr-only"
+                      id="resume"
+                      name="resume"
+                      onChange={(event) => selectResume(event.target.files?.[0])}
+                      ref={resumeInputRef}
+                      type="file"
+                    />
+                    <button
+                      className="shrink-0 rounded-lg border border-[#d8d5cc] bg-[#f7f6f2] px-3 py-2 text-[8.5px] font-bold uppercase tracking-[0.08em] text-[#62655d] transition-colors hover:bg-[#ecebe5]"
+                      onClick={() => resumeInputRef.current?.click()}
+                      type="button"
+                    >
+                      {resume ? "Replace" : "Attach PDF"}
+                    </button>
+                  </div>
+                </div>
+              </section>
             </div>
 
             {errorMessage && (
@@ -318,19 +461,49 @@ async function submitApplication({
   companyName,
   deck,
   githubUrl,
+  linkedinUrl,
+  location,
+  resume,
+  sector,
+  stage,
+  traction,
+  whatBuilding,
 }: {
   companyName: string;
   deck: File;
   githubUrl: string;
+  linkedinUrl: string;
+  location: string;
+  resume: File | null;
+  sector: string;
+  stage: string;
+  traction: string;
+  whatBuilding: string;
 }): Promise<StoredApplication> {
   const submittedAt = new Date().toISOString();
-  const localFounder = createLocalFounder(companyName, deck, githubUrl);
+  const localFounder = createLocalFounder(
+    companyName,
+    deck,
+    githubUrl,
+    sector,
+    location,
+  );
 
   try {
     const formData = new FormData();
     formData.append("companyName", companyName);
     formData.append("pitchDeck", deck, deck.name);
+    if (resume) formData.append("resume", resume, resume.name);
     if (githubUrl) formData.append("githubUrl", githubUrl);
+    if (linkedinUrl) formData.append("linkedinUrl", linkedinUrl);
+    if (whatBuilding) formData.append("whatBuilding", whatBuilding);
+    if (traction) formData.append("traction", traction);
+    if (stage) formData.append("stage", stage);
+    if (sector) formData.append("sector", sector);
+    if (location) {
+      formData.append("location", location);
+      formData.append("geo", location);
+    }
 
     const response = await fetch("/api/apply", {
       method: "POST",
@@ -342,22 +515,57 @@ async function submitApplication({
     const payload = (await response.json()) as unknown;
     const founder = founderFromPayload(payload) ?? localFounder;
     const deckSummary = deckSummaryFromApplyPayload(payload);
-    const assessment = await scoreFounder(founder.id);
+    const resumeSummary = resumeSummaryFromApplyPayload(payload);
+    const assessment = assessmentFromPayload(payload) ?? (await scoreFounder(founder.id));
 
     return {
       founder,
       assessment,
       deckSummary,
+      resumeSummary,
+      documents: {
+        deck: deck.name,
+        ...(resume ? { resume: resume.name } : {}),
+      },
       submittedAt,
       status: assessment ? "scored" : "local-pending",
     };
   } catch {
     return {
       founder: localFounder,
+      documents: {
+        deck: deck.name,
+        ...(resume ? { resume: resume.name } : {}),
+      },
       submittedAt,
       status: "local-pending",
     };
   }
+}
+
+function resumeSummaryFromApplyPayload(payload: unknown): ResumeSummary | undefined {
+  if (!payload || typeof payload !== "object" || !("resume" in payload)) {
+    return undefined;
+  }
+
+  const resumePayload = payload.resume;
+  if (
+    !resumePayload ||
+    typeof resumePayload !== "object" ||
+    !("summary" in resumePayload)
+  ) {
+    return undefined;
+  }
+
+  return resumeSummaryFromUnknown(resumePayload.summary);
+}
+
+function assessmentFromPayload(payload: unknown): Assessment | undefined {
+  if (!payload || typeof payload !== "object" || !("assessment" in payload)) {
+    return undefined;
+  }
+
+  return payload.assessment as Assessment;
 }
 
 function deckSummaryFromApplyPayload(payload: unknown): DeckSummary | undefined {
@@ -412,6 +620,8 @@ function createLocalFounder(
   companyName: string,
   deck: File,
   githubUrl: string,
+  sector: string,
+  location: string,
 ): Founder {
   const slug = companyName
     .toLowerCase()
@@ -422,15 +632,48 @@ function createLocalFounder(
   return {
     id: `inbound-${slug || "founder"}-${Date.now().toString(36)}`,
     name: companyName,
-    company: "New application",
-    sector: "Unclassified",
-    geo: "Undisclosed",
+    company: companyName,
+    sector: sector || "Unclassified",
+    geo: location || "Undisclosed",
     entry: "inbound",
     founderScore: 60,
     founderScoreConfidence: 0.5,
     deckClaims: [`Pitch deck uploaded: ${deck.name}`],
     githubUrl: githubUrl || undefined,
   };
+}
+
+function CompactField({
+  id,
+  label,
+  onChange,
+  placeholder,
+  type = "text",
+  value,
+}: {
+  id: string;
+  label: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  type?: "text" | "url";
+  value: string;
+}) {
+  return (
+    <label className="block" htmlFor={id}>
+      <span className="mb-2 block text-[9px] font-bold uppercase tracking-[0.1em] text-[#777971]">
+        {label}
+      </span>
+      <input
+        className="h-11 w-full rounded-xl border border-[#d5d2c9] bg-white px-3.5 text-[11px] text-[#34362f] outline-none transition placeholder:text-[#aaa9a1] focus:border-[#7c8b7f] focus:ring-4 focus:ring-[#5f8b70]/10"
+        id={id}
+        name={id}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        type={type}
+        value={value}
+      />
+    </label>
+  );
 }
 
 function formatFileSize(size: number): string {

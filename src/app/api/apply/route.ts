@@ -5,9 +5,15 @@
 // inbound applications, which is the point of the Founder -> VC demo beat.
 
 import { NextResponse } from "next/server";
-import { processDeck } from "@/agents/deck";
+import { processDeck, processResume } from "@/agents/deck";
 import { scoreFounder } from "@/agents/score";
-import { allFounders, saveDeckSummary, upsertFounder } from "@/lib/store";
+import {
+  allFounders,
+  saveDeckSummary,
+  saveDocument,
+  saveResumeSummary,
+  upsertFounder,
+} from "@/lib/store";
 import type { Entry, Founder } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -23,26 +29,43 @@ const slugify = (s: string) =>
 const optStr = (v: unknown): string | undefined =>
   typeof v === "string" && v.trim() ? v.trim() : undefined;
 
+interface UploadedFile {
+  buffer: Buffer;
+  filename: string;
+  mime: string;
+}
+
+// Originals are kept in memory for viewing — cap per file so a huge upload
+// can't blow the session store.
+const MAX_STORED_BYTES = 15 * 1024 * 1024;
+
 export async function POST(req: Request) {
   let body: Record<string, unknown> = {};
-  let deckBuffer: Buffer | undefined;
+  let deckFile: UploadedFile | undefined;
+  let resumeFile: UploadedFile | undefined;
 
-  // Accept JSON ({ companyName, deckName?, deckText?, ... }) or
-  // multipart/form-data with the PDF in any file field.
+  // Accept JSON ({ companyName, deckName?, deckText?, resumeText?, ... }) or
+  // multipart/form-data. A file field/filename matching resume|cv is the
+  // resume; the first other file is the deck.
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("multipart/form-data")) {
     try {
       const form = await req.formData();
       for (const [key, value] of form.entries()) {
         if (value && typeof value === "object" && "arrayBuffer" in value) {
-          if (!deckBuffer) {
-            deckBuffer = Buffer.from(await value.arrayBuffer());
-            if (body.deckName === undefined && value.name) body.deckName = value.name;
-          }
+          const file: UploadedFile = {
+            buffer: Buffer.from(await value.arrayBuffer()),
+            filename: value.name || key,
+            mime: value.type || "application/pdf",
+          };
+          const isResume = /resume|cv/i.test(key) || /resume|cv/i.test(value.name ?? "");
+          if (isResume) resumeFile ??= file;
+          else deckFile ??= file;
         } else {
           body[key] = value;
         }
       }
+      if (deckFile && body.deckName === undefined) body.deckName = deckFile.filename;
     } catch {
       // unreadable form -> validation 400 below
     }
@@ -67,8 +90,14 @@ export async function POST(req: Request) {
 
   // Deck in -> claims out. Extraction is fail-soft: on any failure the
   // pipeline continues with manual claims / seeded claims / a placeholder.
-  const deck = await processDeck({ buffer: deckBuffer, text: optStr(body.deckText) });
+  // Resume runs through the same machinery -> career-signal summary plus
+  // verifiable background claims for the Trust Score.
+  const [deck, resume] = await Promise.all([
+    processDeck({ buffer: deckFile?.buffer, text: optStr(body.deckText) }),
+    processResume({ buffer: resumeFile?.buffer, text: optStr(body.resumeText) }),
+  ]);
   const extractedClaims = deck.summary?.claims ?? [];
+  const backgroundClaims = resume.summary?.backgroundClaims ?? [];
 
   // Re-application of a founder already in the pipeline (the demo beat:
   // applying as Maya). Reuse the known profile — but a freshly extracted
@@ -78,13 +107,30 @@ export async function POST(req: Request) {
     (f) => norm(f.company) === target || norm(f.name) === target
   );
 
+  // Resume background claims join the deck claims for verification — capped
+  // and deduped so a resume can't flood the Trust Score list.
+  const mergeClaims = (base: string[], extra: string[]): string[] => {
+    const seenClaims = new Set(base.map(norm));
+    const merged = [...base];
+    for (const c of extra) {
+      if (!seenClaims.has(norm(c))) {
+        seenClaims.add(norm(c));
+        merged.push(c);
+      }
+    }
+    return merged.slice(0, 8);
+  };
+
   let founder: Founder;
   if (existing) {
     founder = {
       ...existing,
       entry: "inbound",
       githubUrl: githubUrl ?? existing.githubUrl,
-      deckClaims: extractedClaims.length ? extractedClaims : existing.deckClaims,
+      deckClaims: mergeClaims(
+        extractedClaims.length ? extractedClaims : existing.deckClaims,
+        backgroundClaims
+      ),
     };
   } else {
     const manualClaims =
@@ -93,16 +139,19 @@ export async function POST(req: Request) {
       body.deckClaims.every((c): c is string => typeof c === "string" && !!c.trim())
         ? body.deckClaims.map((c) => c.trim())
         : [];
-    const deckAttempted = !!deckBuffer || !!optStr(body.deckText);
-    const deckClaims = extractedClaims.length
+    const deckAttempted = !!deckFile || !!optStr(body.deckText);
+    const baseClaims = extractedClaims.length
       ? extractedClaims
       : manualClaims.length
         ? manualClaims
-        : [
-            `Pitch deck submitted${deckName ? `: ${deckName}` : ""}${
-              deckAttempted && !deck.parsed ? " (deck not parsed)" : ""
-            }`,
-          ];
+        : deckAttempted || deckName
+          ? [
+              `Pitch deck submitted${deckName ? `: ${deckName}` : ""}${
+                deckAttempted && !deck.parsed ? " (deck not parsed)" : ""
+              }`,
+            ]
+          : [];
+    const deckClaims = mergeClaims(baseClaims, backgroundClaims);
     const entry = ENTRIES.includes(body.entry as Entry) ? (body.entry as Entry) : "inbound";
     const name = optStr(body.name) ?? companyName;
     founder = {
@@ -123,11 +172,25 @@ export async function POST(req: Request) {
 
   upsertFounder(founder);
   if (deck.summary) saveDeckSummary(founder.id, deck.summary);
+  if (resume.summary) saveResumeSummary(founder.id, resume.summary);
+
+  // Keep the originals for viewing (session-scoped, like the rest of the store).
+  for (const [type, file] of [["deck", deckFile], ["resume", resumeFile]] as const) {
+    if (file && file.buffer.length <= MAX_STORED_BYTES) {
+      saveDocument(founder.id, type, {
+        data: file.buffer.toString("base64"),
+        contentType: file.mime,
+        filename: file.filename,
+      });
+    }
+  }
+
   const assessment = await scoreFounder(founder);
   return NextResponse.json({
     id: founder.id,
     founder,
     assessment,
     deck: { parsed: deck.parsed, source: deck.source, summary: deck.summary },
+    resume: { parsed: resume.parsed, source: resume.source, summary: resume.summary },
   });
 }
