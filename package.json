@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "@types/pdf-parse": "^1.1.5",
+    "@vercel/blob": "^2.6.1",
     "next": "16.2.10",
     "pdf-parse": "^1.1.1",
     "react": "19.2.4",

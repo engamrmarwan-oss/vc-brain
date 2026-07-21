@@ -9,6 +9,8 @@ import { processDeck, processResume } from "@/agents/deck";
 import { scoreFounder, wasStubFallback } from "@/agents/score";
 import {
   allFounders,
+  flushStore,
+  hydrateStore,
   saveDeckSummary,
   saveDocument,
   saveResumeSummary,
@@ -41,6 +43,7 @@ interface UploadedFile {
 const MAX_STORED_BYTES = 15 * 1024 * 1024;
 
 export async function POST(req: Request) {
+  await hydrateStore();
   let body: Record<string, unknown> = {};
   let deckFile: UploadedFile | undefined;
   let resumeFile: UploadedFile | undefined;
@@ -194,6 +197,7 @@ export async function POST(req: Request) {
 
   const assessment = await scoreFounder(founder);
   const stubbed = wasStubFallback(assessment);
+  await flushStore();
   return NextResponse.json({
     id: founder.id,
     founder,

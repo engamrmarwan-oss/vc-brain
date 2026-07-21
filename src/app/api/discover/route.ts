@@ -4,10 +4,12 @@
 
 import { NextResponse } from "next/server";
 import { discoverFounders } from "@/agents/discover";
+import { flushStore, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  await hydrateStore();
   let body: unknown = {};
   try {
     body = await req.json();
@@ -15,5 +17,6 @@ export async function POST(req: Request) {
     // no body -> default filters
   }
   const result = await discoverFounders(body);
+  await flushStore();
   return NextResponse.json(result);
 }

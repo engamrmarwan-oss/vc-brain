@@ -9,8 +9,10 @@ import { NextResponse } from "next/server";
 import { scoreFounder, wasStubFallback } from "@/agents/score";
 import {
   allFounders,
+  flushStore,
   getAssessment,
   getThesis,
+  hydrateStore,
   saveAssessment,
   setThesis,
 } from "@/lib/store";
@@ -33,14 +35,17 @@ async function rankResponse(thesis: ThesisConfig) {
     ...entry,
     trust: buildTrustReport(entry.founder, entry.assessment.claims),
   }));
+  await flushStore();
   return NextResponse.json({ thesis, ranked });
 }
 
 export async function GET() {
+  await hydrateStore();
   return rankResponse(getThesis());
 }
 
 export async function POST(req: Request) {
+  await hydrateStore();
   let body: Record<string, unknown> = {};
   try {
     body = await req.json();

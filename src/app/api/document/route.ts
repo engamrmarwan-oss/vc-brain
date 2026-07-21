@@ -3,11 +3,12 @@
 // as the server instance, same as every other piece of demo state.
 
 import { NextResponse } from "next/server";
-import { getDocument, type DocumentType } from "@/lib/store";
+import { getDocumentAsync, hydrateStore, type DocumentType } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  await hydrateStore();
   const url = new URL(req.url);
   const id = url.searchParams.get("id");
   const type = url.searchParams.get("type");
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
     );
   }
 
-  const doc = getDocument(id, type as DocumentType);
+  const doc = await getDocumentAsync(id, type as DocumentType);
   if (!doc) {
     return NextResponse.json({ error: `no ${type} stored for: ${id}` }, { status: 404 });
   }

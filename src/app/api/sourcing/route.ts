@@ -5,11 +5,12 @@
 
 import { NextResponse } from "next/server";
 import { buildSourcing } from "@/lib/sourcing";
-import { getFounder } from "@/lib/store";
+import { getFounder, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  await hydrateStore();
   const id = new URL(req.url).searchParams.get("id");
   const { channels, provenance } = buildSourcing();
 

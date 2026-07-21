@@ -3,11 +3,12 @@
 // mirroring the /api/deck pattern.
 
 import { NextResponse } from "next/server";
-import { getResumeSummary } from "@/lib/store";
+import { getResumeSummary, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  await hydrateStore();
   const id = new URL(req.url).searchParams.get("id");
   if (!id) {
     return NextResponse.json({ error: "query param id required" }, { status: 400 });

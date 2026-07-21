@@ -3,11 +3,12 @@
 // decision steps, per-claim citations. Regenerated on every score.
 
 import { NextResponse } from "next/server";
-import { getTrace } from "@/lib/store";
+import { getTrace, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  await hydrateStore();
   const id = new URL(req.url).searchParams.get("id");
   if (!id) {
     return NextResponse.json({ error: "query param id required" }, { status: 400 });

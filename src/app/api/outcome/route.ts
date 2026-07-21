@@ -11,11 +11,12 @@ import {
   recordOutcome,
   type OutcomeStage,
 } from "@/lib/sourcing-graph";
-import { getFounder, getSourcingSeedData } from "@/lib/store";
+import { flushStore, getFounder, getSourcingSeedData, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  await hydrateStore();
   let body: Record<string, unknown> = {};
   try {
     body = await req.json();
@@ -42,10 +43,12 @@ export async function POST(req: Request) {
 
   const event = recordOutcome(founder, stage, explicit);
   const { quality, suggestions } = buildSourcingGraph();
+  await flushStore();
   return NextResponse.json({ event, quality, suggestions });
 }
 
 export async function GET(req: Request) {
+  await hydrateStore();
   const founderId = new URL(req.url).searchParams.get("founderId");
   const { outcomes } = getSourcingSeedData();
   return NextResponse.json({

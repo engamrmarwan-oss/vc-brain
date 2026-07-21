@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 
 import { FounderPipeline } from "@/components/founder-pipeline";
-import { allFounders } from "@/lib/store";
+import { allFounders, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +16,7 @@ export default async function Home({
   searchParams: Promise<{ panel?: string; q?: string }>;
 }) {
   const { panel, q } = await searchParams;
+  await hydrateStore();
   const founders = allFounders().sort(
     (a, b) => b.founderScore - a.founderScore,
   );

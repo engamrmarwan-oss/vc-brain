@@ -6,6 +6,21 @@
 import type { DeckSummary, ResumeSummary } from "@/agents/deck";
 import { FOUNDERS } from "@/data/seed";
 import { SEED_EDGES, SEED_OUTCOMES } from "@/data/sourcing-seed";
+import {
+  dbAppendOutcome,
+  dbDeleteAssessment,
+  dbEnabled,
+  dbFetchDocument,
+  dbSaveAssessment,
+  dbSaveDeckSummary,
+  dbSaveDocument,
+  dbSaveResumeSummary,
+  dbSaveThesis,
+  dbSaveTrace,
+  dbSaveValidation,
+  dbUpsertFounder,
+  loadSnapshot,
+} from "@/lib/db";
 import type { OutcomeEvent, SourceEdge } from "@/lib/sourcing-graph";
 import { DEFAULT_THESIS, type ThesisConfig } from "@/lib/thesis";
 import type { TraceReport } from "@/lib/trace";
@@ -33,6 +48,7 @@ type Store = {
   outcomeEvents: OutcomeEvent[]; // append-only outcome log — the feedback loop
   thesis: ThesisConfig;
   seeded: boolean;
+  lastHydratedAt: number; // last DB snapshot merge (0 = never)
 };
 
 // globalThis survives Next.js hot-reload and serverless warm invocations.
@@ -68,11 +84,66 @@ function getStore(): Store {
   s.sourceEdges ??= [...SEED_EDGES];
   s.outcomeEvents ??= [...SEED_OUTCOMES];
   s.thesis ??= DEFAULT_THESIS;
+  s.lastHydratedAt ??= 0;
   if (!s.seeded) {
     for (const f of FOUNDERS) s.founders.set(f.id, f);
     s.seeded = true;
   }
   return s;
+}
+
+// ---------- persistence: hydrate (DB -> memory) + write-through (memory -> DB) ----------
+// The in-memory maps stay the working set so every sync call site is
+// untouched. Routes call hydrateStore() before reading and flushStore()
+// before responding. All DB traffic is fail-soft: outages degrade to the
+// pre-persistence, memory-only behavior.
+
+const HYDRATE_TTL_MS = 5_000;
+let hydrating: Promise<void> | null = null;
+const pendingWrites: Promise<void>[] = [];
+
+const track = (p: Promise<void>): void => {
+  pendingWrites.push(p);
+};
+
+export async function hydrateStore(): Promise<void> {
+  if (!dbEnabled()) return;
+  const s = getStore();
+  if (Date.now() - s.lastHydratedAt < HYDRATE_TTL_MS) return;
+  if (hydrating) return hydrating;
+  hydrating = (async () => {
+    const snap = await loadSnapshot();
+    if (!snap) return; // fail-soft: memory-only this round
+    for (const f of snap.founders) s.founders.set(f.id, f);
+    for (const a of snap.assessments) s.assessments.set(a.founderId, a);
+    for (const d of snap.deckSummaries) s.deckSummaries.set(d.founderId, d.data);
+    for (const r of snap.resumeSummaries) s.resumeSummaries.set(r.founderId, r.data);
+    for (const t of snap.traces) s.traces.set(t.founderId, t);
+    for (const v of snap.validations) s.validations.set(v.founderId, v.data);
+    if (snap.outcomeEvents.length > 0) s.outcomeEvents = snap.outcomeEvents;
+    if (snap.thesis) s.thesis = snap.thesis;
+
+    // Converge code-defined seeds into a fresh (or newly-extended) DB.
+    const dbIds = new Set(snap.founders.map((f) => f.id));
+    for (const f of s.founders.values()) {
+      if (!dbIds.has(f.id)) track(dbUpsertFounder(f));
+    }
+    if (snap.outcomeEvents.length === 0) {
+      for (const e of s.outcomeEvents) track(dbAppendOutcome(e));
+    }
+    s.lastHydratedAt = Date.now();
+  })().finally(() => {
+    hydrating = null;
+  });
+  return hydrating;
+}
+
+// Await all mirrored writes queued during this request. Serverless freezes
+// background work after the response — flushing at the route boundary is
+// what makes writes durable.
+export async function flushStore(): Promise<void> {
+  const batch = pendingWrites.splice(0, pendingWrites.length);
+  if (batch.length) await Promise.allSettled(batch);
 }
 
 export function allFounders(): Founder[] {
@@ -88,6 +159,8 @@ export function upsertFounder(f: Founder): void {
   s.founders.set(f.id, f);
   // Profile changed — any cached assessment is stale.
   s.assessments.delete(f.id);
+  track(dbUpsertFounder(f));
+  track(dbDeleteAssessment(f.id));
 }
 
 export function getAssessment(founderId: string): Assessment | undefined {
@@ -96,6 +169,7 @@ export function getAssessment(founderId: string): Assessment | undefined {
 
 export function saveAssessment(a: Assessment): void {
   getStore().assessments.set(a.founderId, a);
+  track(dbSaveAssessment(a));
 }
 
 export function getDeckSummary(founderId: string): DeckSummary | undefined {
@@ -104,6 +178,7 @@ export function getDeckSummary(founderId: string): DeckSummary | undefined {
 
 export function saveDeckSummary(founderId: string, s: DeckSummary): void {
   getStore().deckSummaries.set(founderId, s);
+  track(dbSaveDeckSummary(founderId, s));
 }
 
 export function getResumeSummary(founderId: string): ResumeSummary | undefined {
@@ -112,6 +187,7 @@ export function getResumeSummary(founderId: string): ResumeSummary | undefined {
 
 export function saveResumeSummary(founderId: string, s: ResumeSummary): void {
   getStore().resumeSummaries.set(founderId, s);
+  track(dbSaveResumeSummary(founderId, s));
 }
 
 export function getDocument(
@@ -130,6 +206,24 @@ export function saveDocument(
   const existing = s.documents.get(founderId) ?? {};
   existing[type] = doc;
   s.documents.set(founderId, existing);
+  track(dbSaveDocument(founderId, type, doc));
+}
+
+// Documents are excluded from snapshot hydration (large) — this async getter
+// falls through to the DB/Blob and warms the memory cache on hit.
+export async function getDocumentAsync(
+  founderId: string,
+  type: DocumentType
+): Promise<StoredDocument | undefined> {
+  const cached = getDocument(founderId, type);
+  if (cached) return cached;
+  const fetched = await dbFetchDocument(founderId, type);
+  if (!fetched) return undefined;
+  const s = getStore();
+  const existing = s.documents.get(founderId) ?? {};
+  existing[type] = fetched;
+  s.documents.set(founderId, existing);
+  return fetched;
 }
 
 export function getTrace(founderId: string): TraceReport | undefined {
@@ -138,6 +232,7 @@ export function getTrace(founderId: string): TraceReport | undefined {
 
 export function saveTrace(t: TraceReport): void {
   getStore().traces.set(t.founderId, t);
+  track(dbSaveTrace(t));
 }
 
 export function getValidation<T>(founderId: string): T | undefined {
@@ -146,6 +241,7 @@ export function getValidation<T>(founderId: string): T | undefined {
 
 export function saveValidation(founderId: string, report: unknown): void {
   getStore().validations.set(founderId, report);
+  track(dbSaveValidation(founderId, report));
 }
 
 export function getSourcingSeedData(): { edges: SourceEdge[]; outcomes: OutcomeEvent[] } {
@@ -155,6 +251,7 @@ export function getSourcingSeedData(): { edges: SourceEdge[]; outcomes: OutcomeE
 
 export function addOutcomeEvent(e: OutcomeEvent): void {
   getStore().outcomeEvents.push(e);
+  track(dbAppendOutcome(e));
 }
 
 export function getThesis(): ThesisConfig {
@@ -163,4 +260,5 @@ export function getThesis(): ThesisConfig {
 
 export function setThesis(t: ThesisConfig): void {
   getStore().thesis = t;
+  track(dbSaveThesis(t));
 }

@@ -3,11 +3,12 @@
 // for the memo to render alongside the Trust Score.
 
 import { NextResponse } from "next/server";
-import { getDeckSummary } from "@/lib/store";
+import { getDeckSummary, hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
+  await hydrateStore();
   const id = new URL(req.url).searchParams.get("id");
   if (!id) {
     return NextResponse.json({ error: "query param id required" }, { status: 400 });

@@ -4,7 +4,7 @@
 
 import { NextResponse } from "next/server";
 import { scoreFounder, wasStubFallback } from "@/agents/score";
-import { getAssessment, getFounder, saveAssessment } from "@/lib/store";
+import { flushStore, getAssessment, getFounder, hydrateStore, saveAssessment } from "@/lib/store";
 import { buildTrustReport } from "@/lib/trust";
 
 export const dynamic = "force-dynamic";
@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "body must be { id: string }" }, { status: 400 });
   }
 
+  await hydrateStore();
   const founder = getFounder(id);
   if (!founder) {
     return NextResponse.json({ error: `unknown founder: ${id}` }, { status: 404 });
@@ -31,6 +32,7 @@ export async function POST(req: Request) {
   if (!fresh) {
     const cached = getAssessment(id);
     if (cached) {
+      await flushStore();
       return NextResponse.json({
         ...cached,
         trust: buildTrustReport(founder, cached.claims),
@@ -41,6 +43,7 @@ export async function POST(req: Request) {
   // A stub (LLM-failure fallback) is served but never cached — the next
   // request gets a fresh scoring attempt instead of a poisoned cache.
   if (!wasStubFallback(assessment)) saveAssessment(assessment);
+  await flushStore();
   return NextResponse.json({
     ...assessment,
     trust: buildTrustReport(founder, assessment.claims),

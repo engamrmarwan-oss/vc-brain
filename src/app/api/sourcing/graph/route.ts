@@ -4,9 +4,11 @@
 
 import { NextResponse } from "next/server";
 import { buildSourcingGraph } from "@/lib/sourcing-graph";
+import { hydrateStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  await hydrateStore();
   return NextResponse.json(buildSourcingGraph());
 }
