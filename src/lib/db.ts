@@ -81,8 +81,10 @@ export async function loadSnapshot(): Promise<DbSnapshot | null> {
   if (!s) return null;
   try {
     await ensureSchema();
+    // The neon tagged template's return type is a config-dependent union;
+    // with default config it is always an array of row objects — pin it.
     const [founders, assessments, decks, resumes, traces, validations, outcomes, thesis] =
-      await Promise.all([
+      (await Promise.all([
         s`SELECT data FROM founders`,
         s`SELECT data FROM assessments`,
         s`SELECT founder_id, data FROM deck_summaries`,
@@ -91,7 +93,7 @@ export async function loadSnapshot(): Promise<DbSnapshot | null> {
         s`SELECT founder_id, data FROM validations`,
         s`SELECT data FROM outcome_events ORDER BY id`,
         s`SELECT data FROM thesis WHERE id = 1`,
-      ]);
+      ])) as Record<string, unknown>[][];
     return {
       founders: founders.map((r) => r.data as Founder),
       assessments: assessments.map((r) => r.data as Assessment),
@@ -210,9 +212,8 @@ export async function dbFetchDocument(
   if (!s) return null;
   try {
     await ensureSchema();
-    const rows =
-      await s`SELECT filename, content_type, blob_url, data_base64 FROM documents
-        WHERE founder_id = ${founderId} AND type = ${type}`;
+    const rows = (await s`SELECT filename, content_type, blob_url, data_base64 FROM documents
+        WHERE founder_id = ${founderId} AND type = ${type}`) as Record<string, unknown>[];
     const row = rows[0];
     if (!row) return null;
     if (row.data_base64) {

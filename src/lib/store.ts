@@ -68,6 +68,7 @@ function getStore(): Store {
       outcomeEvents: [...SEED_OUTCOMES],
       thesis: DEFAULT_THESIS,
       seeded: false,
+      lastHydratedAt: 0,
     };
   }
   const s = g.__vcbrain;
