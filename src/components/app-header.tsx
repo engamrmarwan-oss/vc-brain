@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent } from "react";
 
 import { ViewToggle } from "@/components/view-toggle";
 
@@ -21,13 +21,13 @@ const NAV_ITEMS: Array<{
     label: "Opportunity pipeline",
   },
   {
-    href: "/#github-discovery",
+    href: "/discovery",
     icon: <DiscoveryIcon />,
     key: "discovery",
     label: "Outbound discovery",
   },
   {
-    href: "/?panel=thesis",
+    href: "/thesis",
     icon: <ThesisIcon />,
     key: "thesis",
     label: "Decision thesis",
@@ -43,20 +43,22 @@ const NAV_ITEMS: Array<{
 export function AppHeader() {
   const pathname = usePathname();
   const router = useRouter();
-  const [selectedRootTab, setSelectedRootTab] = useState<NavKey>();
   const founderView = pathname.startsWith("/apply");
   const activeTab: NavKey | undefined = pathname.startsWith("/sourcing")
     ? "sourcing"
+    : pathname.startsWith("/thesis")
+      ? "thesis"
+      : pathname.startsWith("/discovery")
+        ? "discovery"
     : pathname.startsWith("/founder")
       ? "pipeline"
       : pathname === "/"
-        ? selectedRootTab ?? "pipeline"
+        ? "pipeline"
         : undefined;
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const query = String(new FormData(event.currentTarget).get("q") ?? "").trim();
-    setSelectedRootTab("pipeline");
     router.push(query ? `/?q=${encodeURIComponent(query)}` : "/");
   }
 
@@ -67,7 +69,6 @@ export function AppHeader() {
           aria-label="Opportunity pipeline"
           className="vc-header-button hidden size-[34px] shrink-0 place-items-center rounded-lg text-[#5b5d56] hover:bg-[#f0f0ed] sm:grid"
           href="/"
-          onClick={() => setSelectedRootTab("pipeline")}
         >
           <LauncherIcon />
         </Link>
@@ -77,7 +78,6 @@ export function AppHeader() {
           aria-label="Protegis — The VC Brain home"
           className="vc-header-mark flex shrink-0 items-center gap-2.5"
           href="/"
-          onClick={() => setSelectedRootTab("pipeline")}
         >
           <LogoMark className="size-[30px]" />
           <span className="hidden min-[360px]:block">
@@ -138,7 +138,6 @@ export function AppHeader() {
                 }`}
                 href={item.href}
                 key={item.key}
-                onClick={() => setSelectedRootTab(item.key)}
               >
                 {item.icon}
                 <span>{item.label}</span>
