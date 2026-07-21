@@ -182,10 +182,12 @@ export const dbSaveDocument = (founderId: string, type: DocumentType, doc: Store
     if (process.env.BLOB_READ_WRITE_TOKEN) {
       try {
         const { put } = await import("@vercel/blob");
+        // Private store: decks and resumes are founder-sensitive; bytes are
+        // only ever served through our own /api/document route.
         const stored = await put(
           `documents/${founderId}/${type}/${doc.filename}`,
           Buffer.from(doc.data, "base64"),
-          { access: "public", contentType: doc.contentType, allowOverwrite: true }
+          { access: "private", contentType: doc.contentType, allowOverwrite: true }
         );
         blobUrl = stored.url;
         inline = null; // blob holds the bytes; the row holds the pointer
@@ -221,13 +223,21 @@ export async function dbFetchDocument(
       };
     }
     if (row.blob_url) {
-      const res = await fetch(row.blob_url as string);
-      if (!res.ok) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
+      // Private store: authenticated SDK read, never a bare URL fetch.
+      const { get } = await import("@vercel/blob");
+      const result = await get(row.blob_url as string, { access: "private" });
+      if (!result?.stream) return null;
+      const chunks: Uint8Array[] = [];
+      const reader = result.stream.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
       return {
         filename: row.filename as string,
         contentType: row.content_type as string,
-        data: buf.toString("base64"),
+        data: Buffer.concat(chunks).toString("base64"),
       };
     }
     return null;
