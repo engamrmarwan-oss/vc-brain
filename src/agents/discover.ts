@@ -6,7 +6,7 @@
 
 import { fetchGitHubUser, ghFetch } from "@/agents/github";
 import { scoreFounder } from "@/agents/score";
-import { saveAssessment, upsertFounder } from "@/lib/store";
+import { getFounder, saveAssessment, upsertFounder } from "@/lib/store";
 import type { Assessment, Founder } from "@/lib/types";
 
 export interface DiscoverFilters {
@@ -110,12 +110,22 @@ export async function discoverFounders(input: unknown): Promise<DiscoverResult> 
     return { candidates: [], query, note: "GitHub search returned no repositories for these filters." };
   }
 
-  // One candidate per owner, capped.
+  // One candidate per owner, capped — and skip owners ALREADY in the
+  // pipeline so re-scraping surfaces only genuinely new founders. Popular
+  // repos dominate every topic search; without this, their owners reappear
+  // (and get needlessly re-scored) on every run. With persistence on, this
+  // dedupes against every prior scrape, not just the current session.
   const seen = new Set<string>();
   const picks: SearchRepo[] = [];
+  let skippedKnown = 0;
   for (const r of repos) {
-    if (!r?.owner?.login || seen.has(r.owner.login)) continue;
-    seen.add(r.owner.login);
+    const login = r?.owner?.login;
+    if (!login || seen.has(login)) continue;
+    seen.add(login);
+    if (getFounder(`gh-${login.toLowerCase()}`)) {
+      skippedKnown++;
+      continue;
+    }
     picks.push(r);
     if (picks.length >= MAX_CANDIDATES) break;
   }
@@ -156,5 +166,11 @@ export async function discoverFounders(input: unknown): Promise<DiscoverResult> 
     })
   );
 
-  return { candidates, query };
+  const note =
+    skippedKnown > 0
+      ? candidates.length > 0
+        ? `${skippedKnown} owner(s) already in the pipeline were skipped; ${candidates.length} new founder(s) added.`
+        : `All ${skippedKnown} matching owner(s) are already in the pipeline — no new founders this scan. Try a different topic or lower minimum stars.`
+      : undefined;
+  return { candidates, query, note };
 }
